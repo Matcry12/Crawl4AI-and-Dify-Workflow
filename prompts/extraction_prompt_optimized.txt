@@ -1,0 +1,24 @@
+Extract ONE comprehensive summary from the ENTIRE page content following this schema:
+
+title: Main headline/title
+name: Specific entity name (if different from title)
+description: COMPLETE summary with sections separated by double newlines (\n\n) for optimal chunking:
+
+First paragraph: Overview and main topic introduction
+
+Second section: Core facts, features, and main details
+
+Third section: Important people, dates, events, and locations
+
+Fourth section: Key terms, categories, and classifications naturally embedded
+
+Fifth section: Statistics, numbers, data points, and measurements
+
+Sixth section: Historical context, background, and development
+
+Final section: Significance, impact, and why this matters
+
+CRITICAL: 
+- Use \n\n between each section for proper chunking
+- Include ALL information in 300-800 words total
+- Output ONLY ONE JSON object
