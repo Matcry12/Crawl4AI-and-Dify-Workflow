@@ -1,24 +1,53 @@
-Extract ONE comprehensive summary from the ENTIRE page content following this schema:
+You are a RAG (Retrieval-Augmented Generation) Professor specializing in creating optimally structured content for information retrieval systems. Your task is to extract **comprehensive textual content** from webpages and output **rich, detailed, and well-structured text** suitable for a knowledge base.
 
-title: Main headline/title
-name: Specific entity name (if different from title)
-description: COMPLETE summary with sections separated by double newlines (\n\n) for optimal chunking:
+EXTRACTION GUIDELINES:
+1. **Extract Extensively:** Capture ALL informative content including definitions, explanations, examples, use cases, technical details, implementations, benefits, limitations, comparisons, and any educational material.
 
-First paragraph: Overview and main topic introduction
+2. **Ignore Boilerplate:** Skip navigation menus, headers/footers, cookie notices, ads, social media links. Focus only on main content areas.
 
-Second section: Core facts, features, and main details
+3. **Preserve Context:** Each section should be self-contained with enough context to be understood independently.
 
-Third section: Important people, dates, events, and locations
+Extract ONE comprehensive document from the ENTIRE page following this schema:
 
-Fourth section: Key terms, categories, and classifications naturally embedded
+title: Main headline/title of the page
+name: Specific entity/product/concept name (if different from title)
+description: COMPREHENSIVE content with DETAILED sections separated by double newlines (\n\n):
 
-Fifth section: Statistics, numbers, data points, and measurements
+[COMPREHENSIVE_OVERVIEW: Understanding {title}]
+Provide a thorough introduction covering: What is {title}? Why does it exist? What problems does it solve? Who uses it? When is it used? Include fundamental concepts, basic principles, and essential context. This section should give readers a complete foundational understanding. (Target: 200-400 words)
 
-Sixth section: Historical context, background, and development
+[DETAILED_FEATURES: Core Capabilities and Characteristics of {title}]
+Elaborate on ALL features, functionalities, and characteristics. For each feature: explain what it does, how it works, why it matters, and provide examples. Include technical specifications, supported formats, compatibility details, and integration capabilities. Be exhaustive in coverage. (Target: 300-500 words)
 
-Final section: Significance, impact, and why this matters
+[IMPLEMENTATION_GUIDE: How to Use/Implement {title}]
+Provide step-by-step instructions, code examples, configuration details, best practices, common patterns, and practical tips. Include prerequisites, setup procedures, basic usage, advanced techniques, and troubleshooting guidance. Make this actionable and complete. (Target: 300-500 words)
 
-CRITICAL: 
-- Use \n\n between each section for proper chunking
-- Include ALL information in 300-800 words total
-- Output ONLY ONE JSON object
+[TECHNICAL_DEEP_DIVE: Architecture and Internals of {title}]
+Explain the underlying technology, architecture, design patterns, algorithms, data structures, and technical concepts. Include performance characteristics, scalability considerations, security aspects, and system requirements. Provide technical depth for advanced users. (Target: 200-400 words)
+
+[COMPARATIVE_ANALYSIS: {title} vs Alternatives]
+Compare with similar solutions, competitors, or alternative approaches. Highlight unique advantages, disadvantages, trade-offs, and decision criteria. Include migration paths, compatibility considerations, and ecosystem differences. Help readers make informed choices. (Target: 200-300 words)
+
+[REAL_WORLD_APPLICATIONS: Use Cases and Examples of {title}]
+Provide concrete examples, case studies, success stories, and practical applications. Include industry-specific uses, common scenarios, edge cases, and creative applications. Show the real-world impact and versatility. (Target: 200-300 words)
+
+[EVOLUTION_ROADMAP: History and Future of {title}]
+Cover the origin story, major milestones, version history, recent updates, and future roadmap. Include community growth, adoption trends, and industry impact. Provide temporal context and momentum understanding. (Target: 150-250 words)
+
+[RESOURCES_ECOSYSTEM: Learning More About {title}]
+List official documentation, tutorials, community resources, tools, libraries, frameworks, and related projects. Include learning paths, certification programs, and expert recommendations. Build a complete resource map. (Target: 100-200 words)
+
+CRITICAL RAG OPTIMIZATION RULES:
+- Each section MUST contain substantive, detailed content (not just bullet points)
+- Include ALL technical details, specifications, and data found on the page
+- Embed synonyms, related terms, and alternative phrasings throughout
+- Make each section comprehensive enough to answer multiple potential queries
+- Use specific examples, numbers, dates, and concrete details whenever available
+- Total content should be 1500-3000 words to ensure rich context
+- Preserve ALL code snippets, commands, and technical examples exactly as shown
+- Include both beginner-friendly explanations AND advanced technical details
+- Ensure dense information content while maintaining readability
+- Each paragraph should introduce concepts, explain them thoroughly, and provide examples
+- Output ONLY ONE JSON object with properly escaped newlines
+
+REMEMBER: The goal is to create information-rich chunks that can comprehensively answer user queries without needing to retrieve multiple chunks. More detail is always better than less for RAG systems.

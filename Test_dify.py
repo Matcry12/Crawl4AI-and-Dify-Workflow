@@ -16,7 +16,23 @@ class DifyAPI:
             "name": name,
             "text": text,
             "indexing_technique": indexing_technique,
-            "process_rule": {"mode": "automatic"}
+            "process_rule": {
+                "mode": "hierarchical",
+                "rules":{
+                    "pre_processing_rules": [{"id":"remove_extra_spaces", "enabled": True}, {"id":"remove_urls_emails", "enabled": True}],
+                    "segmentation": {
+                    "separator": "\n\n",
+                    "max_tokens": 2048,
+                    "chunk_overlap": 200
+                    }
+                },
+                "parent_mode": "paragraph",
+                "subchunk_segmentation": {
+                    "separator": "\n",
+                    "max_tokens": 2048,
+                    "chunk_overlap": 200
+                }
+            }
         }
         return requests.post(url, headers=self.headers, json=data)
     

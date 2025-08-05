@@ -395,10 +395,11 @@ class CrawlWorkflow:
             with open("prompts/extraction_prompt_optimized.txt", "r") as f:
                 instruction = f.read()
         except FileNotFoundError:
-            instruction = """Extract ONE comprehensive summary from the ENTIRE page content.
-Put ALL information into the description field with sections separated by \\n\\n for optimal chunking:
-overview, core facts, people/dates/events, keywords/categories, statistics, context/background, significance.
-Total 300-800 words. Output only ONE JSON object."""
+            instruction = """Extract comprehensive content from the webpage.
+Create detailed sections separated by \\n\\n covering: comprehensive overview, detailed features, 
+implementation guide, technical deep-dive, comparative analysis, real-world applications, 
+evolution/roadmap, and resources. Target 1500-3000 words total with rich, self-contained 
+sections that can answer queries independently. Output only ONE JSON object."""
         
         # Configure LLM extraction strategy (keeping original logic)
         llm_strategy = LLMExtractionStrategy(
@@ -415,7 +416,7 @@ Total 300-800 words. Output only ONE JSON object."""
             input_format="markdown",
             extra_args={
                 "temperature": 0.0,
-                "max_tokens": 3000
+                "max_tokens": 8000
             }
         )
         
@@ -555,9 +556,9 @@ async def main():
     
     # Run the complete workflow
     await workflow.crawl_and_process(
-        url="https://growagarden.fandom.com/wiki/Raccoon",
-        max_pages=10,
-        max_depth=0
+        url="https://eosnetwork.com/",
+        max_pages=4,
+        max_depth=1
     )
 
 if __name__ == "__main__":
