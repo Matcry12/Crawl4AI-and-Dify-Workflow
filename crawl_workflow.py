@@ -390,16 +390,19 @@ class CrawlWorkflow:
             verbose=False
         )
         
-        # Load extraction instruction (keeping original logic)
+        # Load extraction instruction - using flexible prompt for topic-adaptive structure
         try:
-            with open("prompts/extraction_prompt_optimized.txt", "r") as f:
+            with open("prompts/extraction_prompt_flexible.txt", "r") as f:
                 instruction = f.read()
         except FileNotFoundError:
-            instruction = """Extract comprehensive content from the webpage.
-Create detailed sections separated by \\n\\n covering: comprehensive overview, detailed features, 
-implementation guide, technical deep-dive, comparative analysis, real-world applications, 
-evolution/roadmap, and resources. Target 1500-3000 words total with rich, self-contained 
-sections that can answer queries independently. Output only ONE JSON object."""
+            # Fallback to flexible approach if file not found
+            instruction = """You are a RAG content extractor. Extract comprehensive content from the webpage and create topic-appropriate sections that match the website's natural organization. 
+
+Instead of forcing rigid predefined sections, analyze the content first and create 4-8 logical sections with descriptive titles in brackets (e.g., [Game Rules], [Installation Steps], [Recipe Instructions]) that best represent the content's structure.
+
+Each section should be 150-500 words and self-contained. Adapt your section structure to the content type - gaming sites need different sections than technical documentation or cooking recipes.
+
+Target 1500-3000 words total. Output only ONE JSON object with title, name, and description fields."""
         
         # Configure LLM extraction strategy (keeping original logic)
         llm_strategy = LLMExtractionStrategy(
@@ -556,7 +559,7 @@ async def main():
     
     # Run the complete workflow
     await workflow.crawl_and_process(
-        url="https://eosnetwork.com/",
+        url="https://ollama.com/library/gpt-oss",
         max_pages=4,
         max_depth=1
     )
