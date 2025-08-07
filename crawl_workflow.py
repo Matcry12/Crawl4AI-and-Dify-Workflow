@@ -394,20 +394,33 @@ class CrawlWorkflow:
         try:
             with open("prompts/extraction_prompt_flexible.txt", "r") as f:
                 instruction = f.read()
+                print(f"✅ Loaded extraction prompt successfully ({len(instruction)} characters)")
+                # Debug: Show first 200 chars to verify correct prompt
+                print(f"📝 Prompt preview: {instruction[:200]}...")
         except FileNotFoundError:
+            print("⚠️ extraction_prompt_flexible.txt not found, using fallback")
             # Fallback to flexible approach if file not found
-            instruction = """You are a RAG content extractor. Extract comprehensive content from the webpage and create topic-appropriate sections that match the website's natural organization. 
+            instruction = """You are a RAG content extractor optimizing for systems that return ~10 chunks. Extract comprehensive content where EACH SECTION is a COMPLETE, standalone resource.
 
-Instead of forcing rigid predefined sections, analyze the content first and create 4-8 logical sections with descriptive titles in brackets (e.g., [Game Rules], [Installation Steps], [Recipe Instructions]) that best represent the content's structure.
+Create 4-8 logical sections with descriptive titles in brackets. Each section MUST contain ALL information needed to fully answer queries about its topic.
 
-Each section should be 150-500 words and self-contained. Adapt your section structure to the content type - gaming sites need different sections than technical documentation or cooking recipes.
+CRITICAL RULES:
+1. Each section should be 300-1500 words and 100% self-contained
+2. NEVER split sequential steps across sections - if you see "Step 1, Step 2, Step 3", keep ALL steps together
+3. For processes (account creation, wallet setup, installations), include EVERYTHING in ONE section:
+   - ALL prerequisites
+   - ALL options/choices
+   - ALL steps from start to finish
+   - ALL troubleshooting
+   - ALL next steps
+4. Include deliberate redundancy - repeat full information wherever relevant
 
-Target 1500-3000 words total. Output only ONE JSON object with title, name, and description fields."""
+Target 3000-6000 words total with sections separated by ###SECTION_BREAK###. Output only ONE JSON object with title, name, and description fields."""
         
         # Configure LLM extraction strategy (keeping original logic)
         llm_strategy = LLMExtractionStrategy(
             llm_config=LLMConfig(
-                provider="gemini/gemini-2.5-flash-lite", 
+                provider="gemini/gemini-2.0-flash-exp",  # Using more capable model for better extraction
                 api_token=self.gemini_api_key
             ),
             schema=ResultSchema.model_json_schema(),
@@ -419,7 +432,7 @@ Target 1500-3000 words total. Output only ONE JSON object with title, name, and 
             input_format="markdown",
             extra_args={
                 "temperature": 0.0,
-                "max_tokens": 8000
+                "max_tokens": 32000  # Increased to support comprehensive chunks
             }
         )
         
@@ -456,6 +469,11 @@ Target 1500-3000 words total. Output only ONE JSON object with title, name, and 
                         crawled_count += 1
                         print(f"\n[Page {crawled_count}] {page_result.url}")
                         print(f"  Status: {'✓' if page_result.success else '✗'}")
+                        
+                        # Check if we've reached max_pages
+                        if crawled_count > max_pages:
+                            print(f"  ⚠️  Reached max_pages limit ({max_pages}), stopping processing")
+                            break
                         
                         if not page_result.success:
                             print(f"  Error: {page_result.error_message}")
@@ -495,7 +513,7 @@ Target 1500-3000 words total. Output only ONE JSON object with title, name, and 
                                 print(f"  📄 Title: {extracted_data.get('title', 'N/A')}")
                                 desc = extracted_data.get('description', '')
                                 desc_length = len(desc)
-                                chunk_count = desc.count('\n\n') + 1
+                                chunk_count = desc.count('###SECTION_BREAK###') + 1
                                 print(f"  📝 Description: {desc_length} characters in {chunk_count} chunks")
                                 
                                 # NEW: Process through intelligent workflow
@@ -559,9 +577,9 @@ async def main():
     
     # Run the complete workflow
     await workflow.crawl_and_process(
-        url="https://ollama.com/library/gpt-oss",
-        max_pages=4,
-        max_depth=1
+        url="https://eosnetwork.com/",
+        max_pages=11,
+        max_depth=4
     )
 
 if __name__ == "__main__":

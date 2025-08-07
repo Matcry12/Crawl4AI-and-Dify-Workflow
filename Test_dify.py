@@ -17,20 +17,14 @@ class DifyAPI:
             "text": text,
             "indexing_technique": indexing_technique,
             "process_rule": {
-                "mode": "hierarchical",
+                "mode": "custom",
                 "rules":{
-                    "pre_processing_rules": [{"id":"remove_extra_spaces", "enabled": True}, {"id":"remove_urls_emails", "enabled": True}],
+                    "pre_processing_rules": [{"id":"remove_extra_spaces", "enabled": False}, {"id":"remove_urls_emails", "enabled": False}],
                     "segmentation": {
-                    "separator": "\n\n",
-                    "max_tokens": 2048,
-                    "chunk_overlap": 200
+                    "separator": "###SECTION_BREAK###",
+                    "max_tokens": 4000,
+                    "chunk_overlap": 50
                     }
-                },
-                "parent_mode": "paragraph",
-                "subchunk_segmentation": {
-                    "separator": "\n",
-                    "max_tokens": 2048,
-                    "chunk_overlap": 200
                 }
             }
         }
