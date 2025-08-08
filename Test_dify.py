@@ -88,6 +88,12 @@ class DifyAPI:
             "target_id": target_id
         }
         return requests.post(url, headers=self.headers, json=data)
+    
+    def get_document_list(self, dataset_id, page=1, limit=100):
+        """Get list of documents in a dataset"""
+        url = f"{self.base_url}/v1/datasets/{dataset_id}/documents"
+        params = {"page": page, "limit": limit}
+        return requests.get(url, headers=self.headers, params=params)
 
 
 # Example usage:

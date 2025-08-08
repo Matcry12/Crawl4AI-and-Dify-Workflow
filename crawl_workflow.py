@@ -25,6 +25,7 @@ class CrawlWorkflow:
         self.gemini_api_key = gemini_api_key or os.getenv('GEMINI_API_KEY')
         self.knowledge_bases = {}  # Cache of existing knowledge bases
         self.tags_cache = {}  # Cache of existing tags
+        self.document_cache = {}  # Cache of existing documents by knowledge base {kb_id: {doc_name: doc_id}}
         self._initialized = False  # Track initialization state
         
     async def initialize(self):
@@ -111,7 +112,41 @@ class CrawlWorkflow:
         print("🔄 Refreshing cache from API...")
         self.knowledge_bases.clear()
         self.tags_cache.clear()
+        self.document_cache.clear()
         await self.initialize()
+    
+    def generate_document_name(self, url: str, title: str = None) -> str:
+        """Generate a consistent document name from URL only (ignoring title for consistency)."""
+        # Normalize URL first
+        url = url.rstrip('/')  # Remove trailing slash
+        
+        # Parse URL to get meaningful parts
+        parsed = urlparse(url)
+        domain = parsed.netloc.replace('www.', '')
+        path = parsed.path.strip('/')
+        
+        # Create base name from domain and path
+        if path:
+            # Replace slashes with underscores and clean up
+            path_clean = path.replace('/', '_').replace('-', '_')
+            base_name = f"{domain}_{path_clean}"
+        else:
+            base_name = domain
+        
+        # Add query parameters if present (important for different pages)
+        if parsed.query:
+            # Take first 20 chars of query to differentiate pages
+            query_clean = parsed.query[:20].replace('&', '_').replace('=', '_')
+            base_name = f"{base_name}_q_{query_clean}"
+        
+        # NOTE: We intentionally ignore the title parameter to ensure consistent naming
+        # between checking (before we have title) and pushing (after we have title)
+        
+        # Remove special characters and limit length
+        base_name = ''.join(c for c in base_name if c.isalnum() or c in ['_', '-', '.'])
+        base_name = base_name[:100]  # Limit to 100 chars
+        
+        return base_name
     
     def categorize_content(self, content: str, url: str) -> Tuple[str, List[str]]:
         """Analyze content and determine category and appropriate tags - optimized for token efficiency."""
@@ -305,22 +340,121 @@ class CrawlWorkflow:
         
         return tag_ids
     
-    async def push_to_knowledge_base(self, kb_id: str, content_data: dict, index: int) -> bool:
-        """Push content to specific knowledge base."""
-        markdown_content = content_data.get('description', '')
+    async def load_documents_for_knowledge_base(self, kb_id: str) -> dict:
+        """Load all documents for a specific knowledge base into cache."""
+        if kb_id in self.document_cache:
+            return self.document_cache[kb_id]
         
+        documents = {}
+        page = 1
+        
+        try:
+            while True:
+                response = self.dify_api.get_document_list(kb_id, page=page, limit=100)
+                if response.status_code != 200:
+                    print(f"❌ Failed to get documents for KB {kb_id}: {response.status_code}")
+                    break
+                
+                data = response.json()
+                doc_list = data.get('data', [])
+                
+                if not doc_list:
+                    break
+                
+                for doc in doc_list:
+                    doc_name = doc.get('name', '')
+                    doc_id = doc.get('id', '')
+                    if doc_name and doc_id:
+                        documents[doc_name] = doc_id
+                
+                # Check if there are more pages
+                if not data.get('has_more', False):
+                    break
+                    
+                page += 1
+            
+            self.document_cache[kb_id] = documents
+            print(f"📚 Loaded {len(documents)} existing documents for knowledge base {kb_id}")
+            
+        except Exception as e:
+            print(f"❌ Error loading documents for KB {kb_id}: {e}")
+            self.document_cache[kb_id] = {}
+        
+        return documents
+    
+    async def check_url_exists(self, url: str) -> Tuple[bool, str, str]:
+        """Check if a URL already exists in any knowledge base.
+        Returns: (exists, kb_id, doc_name)
+        """
+        # Normalize URL before checking
+        url = url.rstrip('/')
+        
+        # Generate the document name that would be used for this URL
+        doc_name = self.generate_document_name(url)
+        
+        # Check each knowledge base for this document
+        for kb_name, kb_id in self.knowledge_bases.items():
+            # Load documents for this KB if not already cached
+            if kb_id not in self.document_cache:
+                await self.load_documents_for_knowledge_base(kb_id)
+            
+            # Check if document exists in this KB
+            if doc_name in self.document_cache.get(kb_id, {}):
+                return True, kb_id, doc_name
+        
+        return False, None, doc_name
+    
+    async def preload_all_documents(self):
+        """Preload all documents from all knowledge bases for efficient checking."""
+        print("📚 Preloading all documents from knowledge bases...")
+        total_docs = 0
+        
+        for kb_name, kb_id in self.knowledge_bases.items():
+            docs = await self.load_documents_for_knowledge_base(kb_id)
+            total_docs += len(docs)
+        
+        print(f"✅ Preloaded {total_docs} documents from {len(self.knowledge_bases)} knowledge bases")
+    
+    async def push_to_knowledge_base(self, kb_id: str, content_data: dict, url: str) -> Tuple[bool, str]:
+        """Push content to specific knowledge base with duplicate detection.
+        Returns: (success, status_message)
+        """
+        # Normalize URL
+        url = url.rstrip('/')
+        
+        markdown_content = content_data.get('description', '')
+        title = content_data.get('title', 'Document')
+        
+        # Generate consistent document name based on URL (title is ignored)
+        doc_name = self.generate_document_name(url, title)
+        print(f"  🔍 Document name for push: {doc_name}")
+        
+        # Load existing documents for this knowledge base
+        existing_docs = await self.load_documents_for_knowledge_base(kb_id)
+        
+        # Check if document already exists
+        if doc_name in existing_docs:
+            print(f"⏭️  Document already exists: {doc_name} (ID: {existing_docs[doc_name]})")
+            return True, "skipped_existing"
+        
+        # Create new document
         response = self.dify_api.create_document_from_text(
             dataset_id=kb_id,
-            name=f"{content_data.get('title', 'Document')}_{index}",
+            name=doc_name,
             text=markdown_content
         )
         
         if response.status_code == 200:
-            print(f"✅ Successfully pushed document to knowledge base")
-            return True
+            # Update cache with new document
+            doc_data = response.json()
+            doc_id = doc_data.get('id') or doc_data.get('document', {}).get('id')
+            if doc_id:
+                existing_docs[doc_name] = doc_id
+            print(f"✅ Successfully pushed new document: {doc_name}")
+            return True, "created_new"
         else:
             print(f"❌ Failed to push document: {response.text}")
-            return False
+            return False, "failed"
     
     async def bind_tags_to_knowledge_base(self, kb_id: str, tag_ids: List[str]):
         """Bind tags to knowledge base."""
@@ -333,8 +467,10 @@ class CrawlWorkflow:
         else:
             print(f"❌ Failed to bind tags: {response.text}")
     
-    async def process_crawled_content(self, content_data: dict, url: str, index: int) -> bool:
-        """Process a single crawled content item through the complete workflow."""
+    async def process_crawled_content(self, content_data: dict, url: str) -> Tuple[bool, str]:
+        """Process a single crawled content item through the complete workflow.
+        Returns: (success, status)
+        """
         try:
             # Analyze content to determine category and tags
             description = content_data.get('description', '')
@@ -351,34 +487,37 @@ class CrawlWorkflow:
                 fallback_kb_id = await self.ensure_knowledge_base_exists("general")
                 if not fallback_kb_id:
                     print(f"❌ Even fallback knowledge base failed, skipping content")
-                    return False
+                    return False, "failed_kb_creation"
                 kb_id = fallback_kb_id
                 print(f"✅ Using fallback knowledge base: general (ID: {kb_id})")
             
-            # Push content to knowledge base
-            success = await self.push_to_knowledge_base(kb_id, content_data, index)
-            if not success:
-                return False
+            # Push content to knowledge base with duplicate detection
+            success, status = await self.push_to_knowledge_base(kb_id, content_data, url)
             
-            # Create and bind tags
-            tag_ids = await self.ensure_tags_exist(suggested_tags)
-            if tag_ids:
-                await self.bind_tags_to_knowledge_base(kb_id, tag_ids)
+            # Only bind tags if document was newly created
+            if success and status == "created_new":
+                # Create and bind tags
+                tag_ids = await self.ensure_tags_exist(suggested_tags)
+                if tag_ids:
+                    await self.bind_tags_to_knowledge_base(kb_id, tag_ids)
             
-            return True
+            return success, status
             
         except Exception as e:
             print(f"❌ Error processing content: {e}")
-            return False
+            return False, "error"
     
     async def crawl_and_process(self, url: str, max_pages: int = 10, max_depth: int = 1):
-        """Main workflow: crawl website, filter with LLM, and organize in knowledge bases."""
+        """Main workflow: crawl website, check duplicates BEFORE extraction, and organize in knowledge bases."""
         
         # Initialize workflow
         if not self._initialized:
             await self.initialize()
         else:
             print("📋 Using cached knowledge bases and tags from previous initialization")
+        
+        # Preload all documents for efficient duplicate checking
+        await self.preload_all_documents()
         
         if not self.gemini_api_key:
             print("Warning: No GEMINI_API_KEY provided. Set GEMINI_API_KEY environment variable")
@@ -420,7 +559,7 @@ Target 3000-6000 words total with sections separated by ###SECTION_BREAK###. Out
         # Configure LLM extraction strategy (keeping original logic)
         llm_strategy = LLMExtractionStrategy(
             llm_config=LLMConfig(
-                provider="gemini/gemini-2.0-flash-exp",  # Using more capable model for better extraction
+                provider="gemini/gemini-2.0-flash-exp",  # Faster model, slightly less capable
                 api_token=self.gemini_api_key
             ),
             schema=ResultSchema.model_json_schema(),
@@ -436,14 +575,17 @@ Target 3000-6000 words total with sections separated by ###SECTION_BREAK###. Out
             }
         )
         
-        # Configure crawler (keeping original logic)
-        run_config = CrawlerRunConfig(
+        # First, collect URLs without extraction to check for duplicates
+        print("\n🔍 Phase 1: Collecting URLs and checking for duplicates...")
+        
+        # Configure URL collection (no extraction)
+        url_collection_config = CrawlerRunConfig(
             deep_crawl_strategy=BFSDeepCrawlStrategy(
                 max_depth=max_depth,
                 include_external=False,
                 max_pages=max_pages
             ),
-            extraction_strategy=llm_strategy,
+            extraction_strategy=None,  # No extraction in first pass
             cache_mode=CacheMode.BYPASS,
             stream=True
         )
@@ -451,53 +593,98 @@ Target 3000-6000 words total with sections separated by ###SECTION_BREAK###. Out
         output_dir = "output"
         os.makedirs(output_dir, exist_ok=True)
 
-        # Initialize and run crawler (keeping original logic but adding workflow processing)
+        # Phase 1: Collect URLs and check for duplicates
+        urls_to_process = []
+        duplicate_urls = []
+        
         async with AsyncWebCrawler(config=browser_config) as crawler:
             print(f"🚀 Starting intelligent crawl workflow from: {url}")
-            print("📋 Configuration: Crawl → LLM Filter → Smart Knowledge Base Organization")
+            print("📋 Configuration: Check Duplicates → Extract New → Organize in Knowledge Base")
             print("-" * 80)
             
-            result_stream = await crawler.arun(url=url, config=run_config)
+            # First pass: collect URLs
+            result_stream = await crawler.arun(url=url, config=url_collection_config)
             
             crawled_count = 0
-            extracted_files = []
-            workflow_results = []
             
             try:
                 async for page_result in result_stream:
                     if hasattr(page_result, 'url'):
                         crawled_count += 1
-                        print(f"\n[Page {crawled_count}] {page_result.url}")
-                        print(f"  Status: {'✓' if page_result.success else '✗'}")
                         
-                        # Check if we've reached max_pages
                         if crawled_count > max_pages:
-                            print(f"  ⚠️  Reached max_pages limit ({max_pages}), stopping processing")
                             break
                         
-                        if not page_result.success:
-                            print(f"  Error: {page_result.error_message}")
-                            continue
+                        if page_result.success:
+                            # Check if URL already exists in any knowledge base
+                            exists, kb_id, doc_name = await self.check_url_exists(page_result.url)
+                            
+                            if exists:
+                                duplicate_urls.append(page_result.url)
+                                print(f"⏭️  [Page {crawled_count}] {page_result.url}")
+                                print(f"    Already exists as: '{doc_name}' in KB: {kb_id}")
+                            else:
+                                urls_to_process.append(page_result.url)
+                                print(f"✅ [Page {crawled_count}] {page_result.url}")
+                                print(f"    Will be saved as: '{doc_name}' - New URL to process")
                         
-                        if page_result.extracted_content:
-                            try:
-                                # Parse extracted data (keeping original logic)
-                                if isinstance(page_result.extracted_content, str):
-                                    extracted_data = json.loads(page_result.extracted_content)
-                                else:
-                                    extracted_data = page_result.extracted_content
-                                
-                                if isinstance(extracted_data, list):
-                                    if len(extracted_data) > 1:
-                                        print(f"  Warning: Multiple entries found ({len(extracted_data)}), using first one")
-                                    extracted_data = extracted_data[0] if extracted_data else {}
-                                
-                                if not extracted_data or not extracted_data.get('description'):
-                                    print("  ⏭️  Skipping - no valid content extracted")
-                                    continue
-                                
-                                # Save JSON (keeping original logic)
-                                url_filename = page_result.url.replace("https://", "").replace("http://", "")
+                        
+            except Exception as e:
+                print(f"\nError during URL collection: {e}")
+            
+            # Phase 1 Summary
+            print(f"\n📄 Phase 1 Complete:")
+            print(f"  Total URLs found: {crawled_count}")
+            print(f"  Duplicate URLs skipped: {len(duplicate_urls)}")
+            print(f"  New URLs to process: {len(urls_to_process)}")
+            
+            if not urls_to_process:
+                print("\n✅ All URLs already exist in knowledge base. No new content to extract!")
+                return
+            
+            # Phase 2: Extract content only for new URLs
+            print(f"\n🔍 Phase 2: Extracting content for {len(urls_to_process)} new URLs...")
+            print("-" * 80)
+            
+            extracted_files = []
+            workflow_results = []
+            extraction_failures = 0
+            
+            # Configure extraction for individual URLs
+            extraction_config = CrawlerRunConfig(
+                extraction_strategy=llm_strategy,
+                cache_mode=CacheMode.BYPASS
+            )
+            
+            # Process each new URL
+            for idx, process_url in enumerate(urls_to_process, 1):
+                print(f"\n[{idx}/{len(urls_to_process)}] Processing: {process_url}")
+                
+                retry_count = 0
+                max_retries = 2
+                extraction_successful = False
+                
+                while retry_count <= max_retries and not extraction_successful:
+                    try:
+                        if retry_count > 0:
+                            print(f"  🔄 Retry attempt {retry_count}/{max_retries}...")
+                            await asyncio.sleep(2)  # Brief delay before retry
+                        
+                        result = await crawler.arun(url=process_url, config=extraction_config)
+                        
+                        if result.success and result.extracted_content:
+                            # Parse extracted data
+                            if isinstance(result.extracted_content, str):
+                                extracted_data = json.loads(result.extracted_content)
+                            else:
+                                extracted_data = result.extracted_content
+                            
+                            if isinstance(extracted_data, list):
+                                extracted_data = extracted_data[0] if extracted_data else {}
+                            
+                            if extracted_data and extracted_data.get('description'):
+                                # Save JSON
+                                url_filename = process_url.replace("https://", "").replace("http://", "")
                                 url_filename = url_filename.replace("/", "_").replace("?", "_").replace(":", "_")
                                 if len(url_filename) > 100:
                                     url_filename = url_filename[:100]
@@ -509,43 +696,70 @@ Target 3000-6000 words total with sections separated by ###SECTION_BREAK###. Out
                                 extracted_files.append(str(json_file))
                                 print(f"  💾 Saved: {json_file}")
                                 
-                                # Display summary (keeping original logic)
+                                # Display summary
                                 print(f"  📄 Title: {extracted_data.get('title', 'N/A')}")
                                 desc = extracted_data.get('description', '')
                                 desc_length = len(desc)
                                 chunk_count = desc.count('###SECTION_BREAK###') + 1
                                 print(f"  📝 Description: {desc_length} characters in {chunk_count} chunks")
                                 
-                                # NEW: Process through intelligent workflow
-                                workflow_success = await self.process_crawled_content(
-                                    extracted_data, page_result.url, crawled_count
+                                # Process through workflow
+                                workflow_success, status = await self.process_crawled_content(
+                                    extracted_data, process_url
                                 )
                                 
                                 workflow_results.append({
-                                    'url': page_result.url,
+                                    'url': process_url,
                                     'title': extracted_data.get('title', 'Untitled'),
                                     'success': workflow_success,
-                                    'category': self.categorize_content(desc, page_result.url)[0]
+                                    'status': status,
+                                    'category': self.categorize_content(desc, process_url)[0]
                                 })
                                 
-                            except Exception as e:
-                                print(f"  Error processing content: {e}")
+                                extraction_successful = True
+                            else:
+                                print(f"  ⚠️  No valid content extracted")
+                                if retry_count < max_retries:
+                                    retry_count += 1
+                                else:
+                                    extraction_failures += 1
+                                    break
                         else:
-                            print("  No content extracted")
-                        
-            except Exception as e:
-                print(f"\nError during crawling: {e}")
+                            print(f"  ⚠️  Extraction failed: {result.error_message if hasattr(result, 'error_message') else 'Unknown error'}")
+                            if retry_count < max_retries:
+                                retry_count += 1
+                            else:
+                                extraction_failures += 1
+                                break
+                                
+                    except Exception as e:
+                        print(f"  ❌ Error: {e}")
+                        if retry_count < max_retries:
+                            retry_count += 1
+                        else:
+                            extraction_failures += 1
+                            break
             
             # Final summary
             print("\n" + "=" * 80)
             print("🎯 INTELLIGENT CRAWL WORKFLOW SUMMARY")
             print("=" * 80)
-            print(f"Total pages crawled: {crawled_count}")
-            print(f"Total entries extracted: {len(extracted_files)}")
+            print(f"Total URLs discovered: {crawled_count}")
+            print(f"Duplicate URLs skipped (saved tokens): {len(duplicate_urls)}")
+            print(f"New URLs processed: {len(urls_to_process)}")
+            print(f"Extraction failures: {extraction_failures}")
+            print(f"Total documents saved: {len(extracted_files)}")
             
             if workflow_results:
                 successful = sum(1 for r in workflow_results if r['success'])
+                created_new = sum(1 for r in workflow_results if r.get('status') == 'created_new')
+                skipped_existing = sum(1 for r in workflow_results if r.get('status') == 'skipped_existing')
+                failed = sum(1 for r in workflow_results if not r['success'])
+                
                 print(f"Knowledge base operations: {successful}/{len(workflow_results)} successful")
+                print(f"  ✅ New documents created: {created_new}")
+                print(f"  ⏭️  Existing documents skipped: {skipped_existing}")
+                print(f"  ❌ Failed operations: {failed}")
                 
                 # Show knowledge bases created/used
                 print(f"\n📚 Knowledge bases: {len(self.knowledge_bases)}")
@@ -556,6 +770,10 @@ Target 3000-6000 words total with sections separated by ###SECTION_BREAK###. Out
                 print(f"\n🏷️  Tags: {len(self.tags_cache)}")
                 for name in self.tags_cache.keys():
                     print(f"  • {name}")
+                
+                # Show documents cached
+                total_docs_cached = sum(len(docs) for docs in self.document_cache.values())
+                print(f"\n📄 Total documents tracked: {total_docs_cached}")
             
             # Show token usage (keeping original logic)
             if hasattr(llm_strategy, 'show_usage'):
@@ -577,9 +795,9 @@ async def main():
     
     # Run the complete workflow
     await workflow.crawl_and_process(
-        url="https://eosnetwork.com/",
-        max_pages=11,
-        max_depth=4
+        url="https://docs.eosnetwork.com/",
+        max_pages=20,
+        max_depth=0
     )
 
 if __name__ == "__main__":
