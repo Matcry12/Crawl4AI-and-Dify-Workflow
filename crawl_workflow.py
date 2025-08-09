@@ -19,7 +19,7 @@ from Test_dify import DifyAPI
 
 
 class CrawlWorkflow:
-    def __init__(self, dify_base_url="http://localhost:8088", dify_api_key=None, gemini_api_key=None):
+    def __init__(self, dify_base_url="http://localhost:8088", dify_api_key=None, gemini_api_key=None, use_parent_child=True):
         """Initialize the crawl workflow with API configurations."""
         self.dify_api = DifyAPI(base_url=dify_base_url, api_key=dify_api_key)
         self.gemini_api_key = gemini_api_key or os.getenv('GEMINI_API_KEY')
@@ -27,6 +27,7 @@ class CrawlWorkflow:
         self.tags_cache = {}  # Cache of existing tags
         self.document_cache = {}  # Cache of existing documents by knowledge base {kb_id: {doc_name: doc_id}}
         self._initialized = False  # Track initialization state
+        self.use_parent_child = use_parent_child  # Enable parent-child chunking
         
     async def initialize(self):
         """Initialize workflow by fetching existing knowledge bases and tags."""
@@ -437,23 +438,36 @@ class CrawlWorkflow:
             print(f"⏭️  Document already exists: {doc_name} (ID: {existing_docs[doc_name]})")
             return True, "skipped_existing"
         
-        # Create new document
+        # Create new document with parent-child support
         response = self.dify_api.create_document_from_text(
             dataset_id=kb_id,
             name=doc_name,
-            text=markdown_content
+            text=markdown_content,
+            use_parent_child=self.use_parent_child
         )
         
         if response.status_code == 200:
             # Update cache with new document
             doc_data = response.json()
+            print(f"  📄 Document creation response: {json.dumps(doc_data, indent=2)}")
+            
             doc_id = doc_data.get('id') or doc_data.get('document', {}).get('id')
             if doc_id:
                 existing_docs[doc_name] = doc_id
-            print(f"✅ Successfully pushed new document: {doc_name}")
+                print(f"✅ Successfully pushed new document: {doc_name} (ID: {doc_id})")
+            else:
+                print(f"⚠️  Document created but no ID returned: {doc_name}")
+                print(f"  Response structure: {list(doc_data.keys())}")
+            
+            # Check indexing status if available
+            indexing_status = doc_data.get('indexing_status') or doc_data.get('document', {}).get('indexing_status')
+            if indexing_status:
+                print(f"  📊 Indexing status: {indexing_status}")
+                
             return True, "created_new"
         else:
-            print(f"❌ Failed to push document: {response.text}")
+            print(f"❌ Failed to push document: {response.status_code}")
+            print(f"  Error response: {response.text}")
             return False, "failed"
     
     async def bind_tags_to_knowledge_base(self, kb_id: str, tag_ids: List[str]):
@@ -507,8 +521,15 @@ class CrawlWorkflow:
             print(f"❌ Error processing content: {e}")
             return False, "error"
     
-    async def crawl_and_process(self, url: str, max_pages: int = 10, max_depth: int = 1):
-        """Main workflow: crawl website, check duplicates BEFORE extraction, and organize in knowledge bases."""
+    async def crawl_and_process(self, url: str, max_pages: int = 10, max_depth: int = 1, model: str = "gemini/gemini-2.0-flash-exp"):
+        """Main workflow: crawl website, check duplicates BEFORE extraction, and organize in knowledge bases.
+        
+        Args:
+            url: The starting URL to crawl
+            max_pages: Maximum number of pages to crawl
+            max_depth: Maximum depth for deep crawling
+            model: The LLM model to use for extraction
+        """
         
         # Initialize workflow
         if not self._initialized:
@@ -529,17 +550,13 @@ class CrawlWorkflow:
             verbose=False
         )
         
-        # Load extraction instruction - using flexible prompt for topic-adaptive structure
-        try:
-            with open("prompts/extraction_prompt_flexible.txt", "r") as f:
-                instruction = f.read()
-                print(f"✅ Loaded extraction prompt successfully ({len(instruction)} characters)")
-                # Debug: Show first 200 chars to verify correct prompt
-                print(f"📝 Prompt preview: {instruction[:200]}...")
-        except FileNotFoundError:
-            print("⚠️ extraction_prompt_flexible.txt not found, using fallback")
-            # Fallback to flexible approach if file not found
-            instruction = """You are a RAG content extractor optimizing for systems that return ~10 chunks. Extract comprehensive content where EACH SECTION is a COMPLETE, standalone resource.
+        # Load extraction instruction based on chunking mode
+        if self.use_parent_child:
+            prompt_file = "prompts/extraction_prompt_parent_child.txt"
+            fallback_prompt = """You are a RAG Professor creating parent-child hierarchical chunks. Extract content with PARENT sections (###PARENT_SECTION###) providing overview and CHILD sections (###CHILD_SECTION###) containing details. Each parent should have 2-5 children. Parents: 500-1500 words, Children: 200-800 words. Output ONE JSON with title, name, and description fields."""
+        else:
+            prompt_file = "prompts/extraction_prompt_flexible.txt"
+            fallback_prompt = """You are a RAG content extractor optimizing for systems that return ~10 chunks. Extract comprehensive content where EACH SECTION is a COMPLETE, standalone resource.
 
 Create 4-8 logical sections with descriptive titles in brackets. Each section MUST contain ALL information needed to fully answer queries about its topic.
 
@@ -555,11 +572,23 @@ CRITICAL RULES:
 4. Include deliberate redundancy - repeat full information wherever relevant
 
 Target 3000-6000 words total with sections separated by ###SECTION_BREAK###. Output only ONE JSON object with title, name, and description fields."""
+            
+        try:
+            with open(prompt_file, "r") as f:
+                instruction = f.read()
+                print(f"✅ Loaded extraction prompt successfully ({len(instruction)} characters)")
+                print(f"📝 Using {'parent-child' if self.use_parent_child else 'flat'} chunking mode")
+                # Debug: Show first 200 chars to verify correct prompt
+                print(f"📝 Prompt preview: {instruction[:200]}...")
+        except FileNotFoundError:
+            print(f"⚠️ {prompt_file} not found, using fallback")
+            # Fallback to flexible approach if file not found
+            instruction = fallback_prompt
         
-        # Configure LLM extraction strategy (keeping original logic)
+        # Configure LLM extraction strategy with selected model
         llm_strategy = LLMExtractionStrategy(
             llm_config=LLMConfig(
-                provider="gemini/gemini-2.0-flash-exp",  # Faster model, slightly less capable
+                provider=model,  # Use the model parameter
                 api_token=self.gemini_api_key
             ),
             schema=ResultSchema.model_json_schema(),
@@ -700,8 +729,13 @@ Target 3000-6000 words total with sections separated by ###SECTION_BREAK###. Out
                                 print(f"  📄 Title: {extracted_data.get('title', 'N/A')}")
                                 desc = extracted_data.get('description', '')
                                 desc_length = len(desc)
-                                chunk_count = desc.count('###SECTION_BREAK###') + 1
-                                print(f"  📝 Description: {desc_length} characters in {chunk_count} chunks")
+                                if self.use_parent_child:
+                                    parent_count = desc.count('###PARENT_SECTION###') + 1
+                                    child_count = desc.count('###CHILD_SECTION###')
+                                    print(f"  📝 Description: {desc_length} characters in {parent_count} parent chunks with {child_count} child chunks")
+                                else:
+                                    chunk_count = desc.count('###SECTION_BREAK###') + 1
+                                    print(f"  📝 Description: {desc_length} characters in {chunk_count} chunks")
                                 
                                 # Process through workflow
                                 workflow_success, status = await self.process_crawled_content(
@@ -783,14 +817,15 @@ Target 3000-6000 words total with sections separated by ###SECTION_BREAK###. Out
 
 # Example usage and main function
 async def main():
-    """Example usage of the CrawlWorkflow."""
+    """Example usage of the CrawlWorkflow with parent-child chunking."""
     load_dotenv(override=True)
     
-    # Initialize workflow
+    # Initialize workflow with parent-child chunking enabled
     workflow = CrawlWorkflow(
         dify_base_url="http://localhost:8088",
         dify_api_key="dataset-VoYPMEaQ8L1udk2F6oek99XK",  # Replace with your API key
-        gemini_api_key=os.getenv('GEMINI_API_KEY')
+        gemini_api_key=os.getenv('GEMINI_API_KEY'),
+        use_parent_child=True  # Enable parent-child hierarchical chunking
     )
     
     # Run the complete workflow

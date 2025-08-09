@@ -9,25 +9,61 @@ class DifyAPI:
             'Content-Type': 'application/json'
         }
     
-    def create_document_from_text(self, dataset_id, name="text", text="text", indexing_technique="high_quality"):
-        """Create a Document from Text"""
+    def create_document_from_text(self, dataset_id, name="text", text="text", indexing_technique="high_quality", use_parent_child=True):
+        """Create a Document from Text with support for parent-child chunking"""
         url = f"{self.base_url}/v1/datasets/{dataset_id}/document/create-by-text"
-        data = {
-            "name": name,
-            "text": text,
-            "indexing_technique": indexing_technique,
-            "process_rule": {
-                "mode": "custom",
-                "rules":{
-                    "pre_processing_rules": [{"id":"remove_extra_spaces", "enabled": False}, {"id":"remove_urls_emails", "enabled": False}],
-                    "segmentation": {
-                    "separator": "###SECTION_BREAK###",
-                    "max_tokens": 4000,
-                    "chunk_overlap": 50
+        
+        if use_parent_child:
+            # Parent-child hierarchical chunking configuration
+            data = {
+                "name": name,
+                "text": text,
+                "indexing_technique": indexing_technique,
+                "doc_form": "hierarchical_model",
+                "process_rule": {
+                    "mode": "hierarchical",
+                    "rules": {
+                        "pre_processing_rules": [
+                            {"id": "remove_extra_spaces", "enabled": False}, 
+                            {"id": "remove_urls_emails", "enabled": False}
+                        ],
+                        "parent_mode": "paragraph",
+                        "segmentation": {
+                            "separator": "###PARENT_SECTION###",  # Parent chunk separator
+                            "max_tokens": 4000,  # Larger for parent chunks
+                            "chunk_overlap": 100  # More overlap for context
+                        },
+                        "subchunk_segmentation": {
+                            "separator": "###CHILD_SECTION###",  # Child chunk separator
+                            "max_tokens": 4000,  # Smaller for child chunks
+                            "chunk_overlap": 50  # Some overlap for context
+                        }
+                    },
+                }
+            }
+        else:
+            # Traditional flat chunking configuration
+            data = {
+                "name": name,
+                "text": text,
+                "indexing_technique": indexing_technique,
+                "doc_form": "text_model",
+                "process_rule": {
+                    "mode": "custom",
+                    "rules": {
+                        "pre_processing_rules": [
+                            {"id": "remove_extra_spaces", "enabled": False}, 
+                            {"id": "remove_urls_emails", "enabled": False}
+                        ],
+                        "segmentation": {
+                            "separator": "###SECTION_BREAK###",
+                            "max_tokens": 1024,
+                            "chunk_overlap": 50
+                        }
                     }
                 }
             }
-        }
+        
         return requests.post(url, headers=self.headers, json=data)
     
     def create_empty_knowledge_base(self, name, permission="only_me"):

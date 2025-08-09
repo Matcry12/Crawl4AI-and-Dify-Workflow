@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Crawl4AI - Web Crawler UI</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background-color: #f5f5f5;
+            color: #333;
+            line-height: 1.6;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        
+        .header {
+            background-color: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        
+        .header h1 {
+            color: #2563eb;
+            margin-bottom: 10px;
+        }
+        
+        .header p {
+            color: #666;
+        }
+        
+        .form-container {
+            background-color: #fff;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        
+        .form-group {
+            margin-bottom: 20px;
+        }
+        
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 500;
+            color: #555;
+        }
+        
+        input[type="text"],
+        input[type="number"] {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 16px;
+            transition: border-color 0.3s;
+        }
+        
+        input[type="text"]:focus,
+        input[type="number"]:focus {
+            outline: none;
+            border-color: #2563eb;
+        }
+        
+        .form-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+        
+        .btn {
+            background-color: #2563eb;
+            color: white;
+            padding: 12px 24px;
+            border: none;
+            border-radius: 4px;
+            font-size: 16px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: background-color 0.3s;
+        }
+        
+        .btn:hover {
+            background-color: #1d4ed8;
+        }
+        
+        .btn:disabled {
+            background-color: #9ca3af;
+            cursor: not-allowed;
+        }
+        
+        .btn-cancel {
+            background-color: #ef4444 !important;
+        }
+        
+        .btn-cancel:hover {
+            background-color: #dc2626 !important;
+        }
+        
+        .progress-container {
+            background-color: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            min-height: 400px;
+            max-height: 600px;
+            overflow-y: auto;
+        }
+        
+        .progress-title {
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 15px;
+            color: #333;
+        }
+        
+        .log-entry {
+            padding: 8px 12px;
+            margin-bottom: 5px;
+            border-radius: 4px;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 14px;
+            word-wrap: break-word;
+        }
+        
+        .log-entry.info {
+            background-color: #f0f9ff;
+            color: #0369a1;
+        }
+        
+        .log-entry.success {
+            background-color: #f0fdf4;
+            color: #166534;
+        }
+        
+        .log-entry.warning {
+            background-color: #fefce8;
+            color: #854d0e;
+        }
+        
+        .log-entry.error {
+            background-color: #fef2f2;
+            color: #991b1b;
+        }
+        
+        .status-indicator {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 14px;
+            font-weight: 500;
+        }
+        
+        .status-indicator.idle {
+            background-color: #e5e7eb;
+            color: #6b7280;
+        }
+        
+        .status-indicator.running {
+            background-color: #dbeafe;
+            color: #1e40af;
+        }
+        
+        .status-indicator.complete {
+            background-color: #d1fae5;
+            color: #065f46;
+        }
+        
+        .spinner {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border: 2px solid #1e40af;
+            border-radius: 50%;
+            border-top-color: transparent;
+            animation: spin 0.8s linear infinite;
+        }
+        
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        
+        .advanced-toggle {
+            margin-top: 20px;
+            cursor: pointer;
+            color: #2563eb;
+            font-size: 14px;
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+        }
+        
+        .advanced-settings {
+            margin-top: 20px;
+            padding-top: 20px;
+            border-top: 1px solid #e5e7eb;
+            display: none;
+        }
+        
+        .advanced-settings.show {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🔍 Crawl4AI Web Interface</h1>
+            <p>Intelligent web crawler with LLM extraction and Dify knowledge base integration</p>
+        </div>
+        
+        <div class="form-container">
+            <form id="crawlForm">
+                <div class="form-group">
+                    <label for="url">Website URL</label>
+                    <input type="text" id="url" name="url" placeholder="https://example.com" required>
+                </div>
+                
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="max_pages">Max Pages</label>
+                        <input type="number" id="max_pages" name="max_pages" value="10" min="1" max="100">
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="max_depth">Max Depth</label>
+                        <input type="number" id="max_depth" name="max_depth" value="0" min="0" max="5">
+                    </div>
+                </div>
+                
+                <div class="advanced-toggle" onclick="toggleAdvanced()">
+                    <span id="advancedArrow">▶</span> Advanced Settings
+                </div>
+                
+                <div class="advanced-settings" id="advancedSettings">
+                    <div class="form-group">
+                        <label for="llm_api_key">LLM API Key <span id="apiKeyProvider">(Gemini)</span></label>
+                        <input type="text" id="llm_api_key" name="llm_api_key" placeholder="Your API key for the selected model">
+                        <small style="color: #666; display: block; margin-top: 5px;">Leave empty to use API key from .env file (GEMINI_API_KEY, OPENAI_API_KEY, etc.)</small>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="model">AI Model</label>
+                        <select id="model" name="model" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 16px;" onchange="handleModelChange()">
+                            <option value="gemini/gemini-2.0-flash-exp">Gemini 2.0 Flash (Fast & Efficient)</option>
+                            <option value="gemini/gemini-1.5-flash">Gemini 1.5 Flash</option>
+                            <option value="gemini/gemini-1.5-pro">Gemini 1.5 Pro (Best Quality)</option>
+                            <option value="gemini/gemini-pro">Gemini Pro</option>
+                            <option value="openai/gpt-4">OpenAI GPT-4</option>
+                            <option value="openai/gpt-3.5-turbo">OpenAI GPT-3.5 Turbo</option>
+                            <option value="anthropic/claude-3-opus">Claude 3 Opus</option>
+                            <option value="anthropic/claude-3-sonnet">Claude 3 Sonnet</option>
+                            <option value="custom">➕ Custom Model...</option>
+                        </select>
+                        <input type="text" id="customModel" name="customModel" placeholder="e.g., provider/model-name" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 16px; margin-top: 10px; display: none;">
+                        <small style="color: #666; display: block; margin-top: 5px;">Format: provider/model-name (e.g., openai/gpt-4, anthropic/claude-3)</small>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="base_url">Dify Base URL</label>
+                        <input type="text" id="base_url" name="base_url" value="http://localhost:8088">
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="api_key">Dify API Key</label>
+                        <input type="text" id="api_key" name="api_key" value="dataset-VoYPMEaQ8L1udk2F6oek99XK">
+                    </div>
+                </div>
+                
+                <button type="submit" class="btn" id="startBtn">
+                    Start Crawling
+                </button>
+                
+                <button type="button" class="btn btn-cancel" id="cancelBtn" style="display: none; background-color: #ef4444; margin-left: 10px;">
+                    Cancel Crawl
+                </button>
+                
+                <span class="status-indicator idle" id="statusIndicator">
+                    Idle
+                </span>
+            </form>
+        </div>
+        
+        <div class="progress-container">
+            <div class="progress-title">📋 Progress Log</div>
+            <div id="progressLog">
+                <div class="log-entry info">Ready to start crawling...</div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        let eventSource = null;
+        
+        function toggleAdvanced() {
+            const settings = document.getElementById('advancedSettings');
+            const arrow = document.getElementById('advancedArrow');
+            settings.classList.toggle('show');
+            arrow.textContent = settings.classList.contains('show') ? '▼' : '▶';
+        }
+        
+        function handleModelChange() {
+            const modelSelect = document.getElementById('model');
+            const customModelInput = document.getElementById('customModel');
+            const apiKeyProvider = document.getElementById('apiKeyProvider');
+            
+            if (modelSelect.value === 'custom') {
+                customModelInput.style.display = 'block';
+                customModelInput.required = true;
+                apiKeyProvider.textContent = '(Custom)';
+            } else {
+                customModelInput.style.display = 'none';
+                customModelInput.required = false;
+                customModelInput.value = '';
+                
+                // Update API key label based on selected model
+                if (modelSelect.value.startsWith('gemini/')) {
+                    apiKeyProvider.textContent = '(Gemini)';
+                } else if (modelSelect.value.startsWith('openai/')) {
+                    apiKeyProvider.textContent = '(OpenAI)';
+                } else if (modelSelect.value.startsWith('anthropic/')) {
+                    apiKeyProvider.textContent = '(Anthropic)';
+                } else {
+                    apiKeyProvider.textContent = '';
+                }
+            }
+        }
+        
+        function addLogEntry(message, type = 'info') {
+            const logContainer = document.getElementById('progressLog');
+            const entry = document.createElement('div');
+            entry.className = `log-entry ${type}`;
+            entry.textContent = message;
+            logContainer.appendChild(entry);
+            logContainer.scrollTop = logContainer.scrollHeight;
+        }
+        
+        function updateStatus(status) {
+            const indicator = document.getElementById('statusIndicator');
+            const startBtn = document.getElementById('startBtn');
+            const cancelBtn = document.getElementById('cancelBtn');
+            
+            indicator.className = `status-indicator ${status}`;
+            
+            switch(status) {
+                case 'running':
+                    indicator.innerHTML = '<span class="spinner"></span> Running';
+                    cancelBtn.style.display = 'inline-block';
+                    break;
+                case 'complete':
+                    indicator.innerHTML = '✓ Complete';
+                    cancelBtn.style.display = 'none';
+                    break;
+                case 'cancelled':
+                    indicator.innerHTML = '⏹ Cancelled';
+                    cancelBtn.style.display = 'none';
+                    startBtn.disabled = false;
+                    break;
+                case 'error':
+                    indicator.innerHTML = '✗ Error';
+                    cancelBtn.style.display = 'none';
+                    break;
+                default:
+                    indicator.innerHTML = 'Idle';
+                    cancelBtn.style.display = 'none';
+            }
+        }
+        
+        function startProgressStream() {
+            eventSource = new EventSource('/progress');
+            
+            eventSource.onmessage = function(event) {
+                const data = JSON.parse(event.data);
+                
+                if (data.type === 'heartbeat') {
+                    return;
+                }
+                
+                if (data.type === 'log') {
+                    // Determine log type based on message content
+                    let logType = 'info';
+                    if (data.message.includes('✅') || data.message.includes('Successfully')) {
+                        logType = 'success';
+                    } else if (data.message.includes('⏭️') || data.message.includes('Skipping')) {
+                        logType = 'warning';
+                    } else if (data.message.includes('❌') || data.message.includes('Error') || data.message.includes('Failed')) {
+                        logType = 'error';
+                    }
+                    
+                    addLogEntry(data.message, logType);
+                } else if (data.type === 'complete') {
+                    addLogEntry(data.message, 'success');
+                    updateStatus('complete');
+                    document.getElementById('startBtn').disabled = false;
+                    eventSource.close();
+                } else if (data.type === 'cancelled') {
+                    addLogEntry(data.message, 'warning');
+                    updateStatus('cancelled');
+                    document.getElementById('startBtn').disabled = false;
+                    eventSource.close();
+                } else if (data.type === 'error') {
+                    addLogEntry(data.message, 'error');
+                    updateStatus('error');
+                    document.getElementById('startBtn').disabled = false;
+                    eventSource.close();
+                }
+            };
+            
+            eventSource.onerror = function(error) {
+                console.error('EventSource error:', error);
+                if (eventSource.readyState === EventSource.CLOSED) {
+                    addLogEntry('Connection to server lost', 'error');
+                    updateStatus('error');
+                    document.getElementById('startBtn').disabled = false;
+                }
+            };
+        }
+        
+        document.getElementById('crawlForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const modelSelect = document.getElementById('model');
+            const customModel = document.getElementById('customModel').value;
+            const selectedModel = modelSelect.value === 'custom' ? customModel : modelSelect.value;
+            
+            // Validate custom model format
+            if (modelSelect.value === 'custom' && customModel) {
+                if (!customModel.includes('/')) {
+                    alert('Custom model must be in format: provider/model-name (e.g., openai/gpt-4)');
+                    return;
+                }
+            }
+            
+            const formData = {
+                url: document.getElementById('url').value,
+                max_pages: document.getElementById('max_pages').value,
+                max_depth: document.getElementById('max_depth').value,
+                base_url: document.getElementById('base_url').value,
+                api_key: document.getElementById('api_key').value,
+                llm_api_key: document.getElementById('llm_api_key').value,
+                model: selectedModel
+            };
+            
+            // Clear previous logs
+            document.getElementById('progressLog').innerHTML = '';
+            
+            // Disable submit button
+            document.getElementById('startBtn').disabled = true;
+            updateStatus('running');
+            
+            try {
+                const response = await fetch('/start_crawl', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(formData)
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok) {
+                    addLogEntry('Crawl started successfully!', 'success');
+                    startProgressStream();
+                } else {
+                    addLogEntry(`Error: ${result.message}`, 'error');
+                    updateStatus('error');
+                    document.getElementById('startBtn').disabled = false;
+                }
+            } catch (error) {
+                addLogEntry(`Error: ${error.message}`, 'error');
+                updateStatus('error');
+                document.getElementById('startBtn').disabled = false;
+            }
+        });
+        
+        // Cancel button handler
+        document.getElementById('cancelBtn').addEventListener('click', async () => {
+            try {
+                const response = await fetch('/cancel', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok) {
+                    addLogEntry('Cancellation requested...', 'warning');
+                } else {
+                    addLogEntry(`Error: ${result.message}`, 'error');
+                }
+            } catch (error) {
+                addLogEntry(`Error: ${error.message}`, 'error');
+            }
+        });
+        
+        // Check initial status
+        fetch('/status')
+            .then(res => res.json())
+            .then(data => {
+                if (data.is_running) {
+                    document.getElementById('startBtn').disabled = true;
+                    updateStatus('running');
+                    addLogEntry('A crawl is already in progress...', 'info');
+                    startProgressStream();
+                }
+            });
+    </script>
+</body>
+</html>
