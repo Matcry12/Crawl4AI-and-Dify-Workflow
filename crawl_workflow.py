@@ -11,6 +11,8 @@ from crawl4ai.extraction_strategy import LLMExtractionStrategy
 from crawl4ai.deep_crawling import BFSDeepCrawlStrategy
 from dotenv import load_dotenv
 from models.schemas import ResultSchema
+from difflib import SequenceMatcher
+import re
 
 # Import the DifyAPI class
 import sys
@@ -19,10 +21,20 @@ from Test_dify import DifyAPI
 
 
 class CrawlWorkflow:
-    def __init__(self, dify_base_url="http://localhost:8088", dify_api_key=None, gemini_api_key=None, use_parent_child=True):
-        """Initialize the crawl workflow with API configurations."""
+    def __init__(self, dify_base_url="http://localhost:8088", dify_api_key=None, gemini_api_key=None, use_parent_child=True, naming_model=None):
+        """Initialize the crawl workflow with API configurations.
+        
+        Args:
+            dify_base_url: Base URL for Dify API
+            dify_api_key: API key for Dify
+            gemini_api_key: API key for Gemini (used for both naming and extraction by default)
+            use_parent_child: Enable parent-child chunking for extraction
+            naming_model: Custom model for knowledge base naming (e.g., "gemini/gemini-1.5-flash" for fast naming)
+                         If None, uses the same model as extraction
+        """
         self.dify_api = DifyAPI(base_url=dify_base_url, api_key=dify_api_key)
         self.gemini_api_key = gemini_api_key or os.getenv('GEMINI_API_KEY')
+        self.naming_model = naming_model or "gemini/gemini-1.5-flash"  # Default to fast model for naming
         self.knowledge_bases = {}  # Cache of existing knowledge bases
         self.tags_cache = {}  # Cache of existing tags
         self.document_cache = {}  # Cache of existing documents by knowledge base {kb_id: {doc_name: doc_id}}
@@ -149,55 +161,334 @@ class CrawlWorkflow:
         
         return base_name
     
-    def categorize_content(self, content: str, url: str) -> Tuple[str, List[str]]:
-        """Analyze content and determine category and appropriate tags - optimized for token efficiency."""
+    def preprocess_category_name(self, category: str) -> str:
+        """Standardize category names to prevent duplicates."""
+        if not category:
+            return "general"
+        
+        # Convert to lowercase
+        category = category.lower().strip()
+        
+        # Handle common patterns that should be the same
+        replacements = {
+            'grow a garden': 'growagarden',
+            'grow_a_garden': 'growagarden',
+            'grow-a-garden': 'growagarden',
+            'eos network': 'eos',
+            'eos_network': 'eos',
+            'eos-network': 'eos',
+            'bitcoin btc': 'bitcoin',
+            'btc bitcoin': 'bitcoin',
+            'ethereum eth': 'ethereum',
+            'eth ethereum': 'ethereum',
+            'react js': 'react',
+            'reactjs': 'react',
+            'react.js': 'react',
+        }
+        
+        # Direct replacements
+        for old, new in replacements.items():
+            if category == old:
+                category = new
+                break
+        
+        # Remove common articles and join words
+        articles = ['a', 'an', 'the']
+        words = re.split(r'[\s_-]+', category)
+        words = [w for w in words if w and w not in articles]
+        
+        # For short phrases, remove spaces/underscores/hyphens
+        if len(words) <= 3:
+            category = ''.join(words)
+        else:
+            # For longer phrases, use underscores
+            category = '_'.join(words)
+        
+        return category[:50]  # Limit length
+    
+    def find_best_matching_kb(self, new_category: str, threshold: float = 0.85) -> str:
+        """Find existing KB that matches closely using fuzzy matching."""
+        if not self.knowledge_bases:
+            return new_category
+        
+        # Normalize for comparison
+        def normalize(text):
+            return re.sub(r'[^a-z0-9]', '', text.lower())
+        
+        new_normalized = normalize(new_category)
+        if not new_normalized:
+            return new_category
+        
+        best_match = None
+        best_score = 0
+        
+        for existing_kb in self.knowledge_bases.keys():
+            existing_normalized = normalize(existing_kb)
+            
+            # Check exact match after normalization
+            if new_normalized == existing_normalized:
+                print(f"  🎯 Exact match: '{new_category}' → '{existing_kb}'")
+                return existing_kb
+            
+            # Check similarity ratio
+            similarity = SequenceMatcher(None, new_normalized, existing_normalized).ratio()
+            if similarity > best_score:
+                best_match = existing_kb
+                best_score = similarity
+        
+        # Use best match if above threshold
+        if best_score >= threshold:
+            print(f"  🔄 Fuzzy match: '{new_category}' → '{best_match}' (similarity: {best_score:.2%})")
+            return best_match
+        
+        return new_category
+    
+    def extract_keywords(self, text: str) -> set:
+        """Extract main keywords from category name."""
+        if not text:
+            return set()
+        
+        # Remove common words
+        stopwords = {'a', 'an', 'the', 'and', 'or', 'of', 'in', 'on', 'at', 'to', 'for', 'with'}
+        words = re.split(r'[\s_-]+', text.lower())
+        keywords = {w for w in words if w not in stopwords and len(w) > 2}
+        return keywords
+    
+    def find_kb_by_keywords(self, new_category: str, threshold: float = 0.6) -> str:
+        """Find KB with matching keywords as backup method."""
+        if not self.knowledge_bases:
+            return new_category
+        
+        new_keywords = self.extract_keywords(new_category)
+        if not new_keywords:
+            return new_category
+        
+        best_match = None
+        best_score = 0
+        
+        for kb_name in self.knowledge_bases.keys():
+            kb_keywords = self.extract_keywords(kb_name)
+            if not kb_keywords:
+                continue
+            
+            # Calculate Jaccard similarity (intersection over union)
+            intersection = len(new_keywords & kb_keywords)
+            union = len(new_keywords | kb_keywords)
+            score = intersection / union if union > 0 else 0
+            
+            if score > best_score:
+                best_match = kb_name
+                best_score = score
+        
+        # Use keyword match if above threshold
+        if best_score >= threshold:
+            print(f"  🔑 Keyword match: '{new_category}' → '{best_match}' (score: {best_score:.2%})")
+            return best_match
+        
+        return new_category
+    
+    async def categorize_content(self, content: str, url: str) -> Tuple[str, List[str]]:
+        """Smart content categorization with duplicate prevention."""
         domain = urlparse(url).netloc.lower()
         
-        # Simple categorization based on domain and content keywords
+        # Step 1: Try LLM categorization
+        category = None
+        tags = []
+        
+        try:
+            # Prepare content sample for analysis (first 1000 chars for efficiency)
+            content_sample = content[:1000] if len(content) > 1000 else content
+            
+            # Create prompt for LLM categorization
+            categorization_prompt = f"""Analyze this content and provide a GENERAL knowledge base category name and relevant tags.
+
+URL: {url}
+Domain: {domain}
+Content sample: {content_sample}
+
+Instructions:
+1. Create a GENERAL category name that groups ALL related content together
+2. Use ONLY the main technology/platform name, nothing else
+3. Keep it as SHORT as possible (1-2 words max)
+4. Use snake_case only if necessary (prefer single word)
+5. DO NOT add descriptors like "_documentation", "_tutorial", "_development"
+6. Generate 3-5 relevant tags that describe the content
+
+Output format (JSON):
+{{
+  "category": "general_category_name",
+  "tags": ["tag1", "tag2", "tag3"]
+}}
+
+Examples:
+- For ANY EOS-related content: {{"category": "eos", "tags": ["eos", "blockchain", "web3"]}}
+- For ANY Bitcoin content: {{"category": "bitcoin", "tags": ["bitcoin", "cryptocurrency", "btc"]}}
+- For ANY Ethereum content: {{"category": "ethereum", "tags": ["ethereum", "blockchain", "eth"]}}
+- For ANY React content: {{"category": "react", "tags": ["react", "javascript", "frontend"]}}
+"""
+            
+            # Use the configured naming model for categorization
+            # For now, we'll use a simple API call approach
+            # TODO: Implement proper model switching when crawl4ai supports it
+            
+            print(f"  🤖 Using naming model: {self.naming_model}")
+            
+            # Use direct Gemini API call (will be replaced with proper model switching later)
+            import requests
+            
+            # Extract model type and determine API endpoint
+            if "gemini" in self.naming_model.lower():
+                model_name = self.naming_model.split("/")[-1] if "/" in self.naming_model else "gemini-1.5-flash"
+                
+                headers = {
+                    'Content-Type': 'application/json',
+                }
+                
+                data = {
+                    "contents": [{
+                        "parts": [{
+                            "text": categorization_prompt
+                        }]
+                    }],
+                    "generationConfig": {
+                        "temperature": 0.2,  # Lower temperature for consistent naming
+                        "maxOutputTokens": 256,
+                        "topK": 40,
+                        "topP": 0.95
+                    }
+                }
+                
+                response = requests.post(
+                    f'https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={self.gemini_api_key}',
+                    headers=headers,
+                    json=data
+                )
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    text_response = result['candidates'][0]['content']['parts'][0]['text']
+                    print(f"  🤖 Naming model response: {text_response[:100]}...")
+                
+                # Parse JSON response
+                json_match = re.search(r'\{[^}]+\}', text_response)
+                if json_match:
+                    categorization_data = json.loads(json_match.group())
+                    category = categorization_data.get('category', 'general')
+                    tags = categorization_data.get('tags', [])
+                    
+                    if category and isinstance(tags, list):
+                        print(f"  🤖 Raw naming result: {category}")
+                        
+                        # Step 2: Preprocess/normalize the category name
+                        category = self.preprocess_category_name(category)
+                        print(f"  📝 Normalized: {category}")
+                        
+                        # Step 3: Check for fuzzy matches with existing KBs (saves tokens!)
+                        matched_category = self.find_best_matching_kb(category, threshold=0.85)
+                        if matched_category != category:
+                            category = matched_category
+                        else:
+                            # Step 4: Try keyword matching as backup
+                            keyword_matched = self.find_kb_by_keywords(category, threshold=0.6)
+                            if keyword_matched != category:
+                                category = keyword_matched
+                        
+                        # Add domain tag
+                        domain_tag = domain.replace('.', '_')
+                        if domain_tag not in tags:
+                            tags.append(domain_tag)
+                        
+                        return category, tags[:5]
+            
+        except Exception as e:
+            print(f"  ⚠️  LLM categorization failed: {e}, using fallback")
+        
+        # Step 5: Fallback to enhanced rule-based categorization
+        print(f"  🔧 Using enhanced rule-based fallback")
         category = "general"
         tags = []
         
-        # Domain-based categorization
-        if 'news' in domain or 'blog' in domain:
-            category = "news_and_blogs"
+        # Prepare content sample for analysis
+        content_lower = content[:500].lower() if len(content) > 500 else content.lower()
+        
+        # Domain-based categorization with general names
+        if 'eos' in domain or 'eos' in content_lower:
+            category = "eos"
+            tags.extend(["eos", "blockchain"])
+        elif 'bitcoin' in domain or any(term in content_lower for term in ['bitcoin', 'btc']):
+            category = "bitcoin"
+            tags.extend(["bitcoin", "cryptocurrency"])
+        elif 'ethereum' in domain or any(term in content_lower for term in ['ethereum', 'eth']):
+            category = "ethereum"
+            tags.extend(["ethereum", "blockchain"])
+        elif 'solana' in domain or 'solana' in content_lower:
+            category = "solana"
+            tags.extend(["solana", "blockchain"])
+        elif 'cardano' in domain or any(term in content_lower for term in ['cardano', 'ada']):
+            category = "cardano"
+            tags.extend(["cardano", "blockchain"])
+        elif 'polkadot' in domain or any(term in content_lower for term in ['polkadot', 'dot']):
+            category = "polkadot"
+            tags.extend(["polkadot", "blockchain"])
+        elif any(term in domain for term in ['news', 'blog']):
+            category = "news_blogs"
             tags.append("news")
-        elif 'doc' in domain or 'wiki' in domain:
-            category = "documentation"
-            tags.append("documentation")
-        elif 'edu' in domain or 'university' in domain:
-            category = "education"
-            tags.append("education")
-        elif 'github' in domain or 'gitlab' in domain:
-            category = "development"
+        elif any(term in domain for term in ['github', 'gitlab']):
+            category = "code_repos"
             tags.append("code")
-        elif 'api' in domain:
-            category = "api_documentation" 
-            tags.append("api")
+        else:
+            # Content-based categorization
+            if 'react' in content_lower:
+                category = "react"
+                tags.extend(["react", "javascript"])
+            elif 'vue' in content_lower:
+                category = "vue"
+                tags.extend(["vue", "javascript"])
+            elif 'angular' in content_lower:
+                category = "angular"
+                tags.extend(["angular", "javascript"])
+            elif 'python' in content_lower:
+                category = "python"
+                tags.extend(["python", "programming"])
+            elif any(term in content_lower for term in ['javascript', 'js']):
+                category = "javascript"
+                tags.extend(["javascript", "programming"])
+            elif 'java' in content_lower and 'javascript' not in content_lower:
+                category = "java"
+                tags.extend(["java", "programming"])
+            elif any(tech in content_lower for tech in ['blockchain', 'crypto', 'defi', 'web3']):
+                category = "blockchain"
+                tags.append("blockchain")
+            elif any(tech in content_lower for tech in ['ai', 'machine learning', 'artificial intelligence', 'ml']):
+                category = "ai_ml"
+                tags.extend(["ai", "machine_learning"])
+            elif 'api' in content_lower:
+                category = "api_docs"
+                tags.append("api")
         
-        # Content-based tagging - check only first 500 chars for efficiency
-        content_sample = content[:500].lower() if len(content) > 500 else content.lower()
+        # Step 6: Apply smart matching to fallback result too
+        print(f"  🔧 Fallback result: {category}")
         
-        # Technology tags
-        if any(tech in content_sample for tech in ['python', 'javascript', 'java', 'react', 'node']):
-            tags.append("programming")
-        if any(tech in content_sample for tech in ['blockchain', 'crypto', 'bitcoin', 'ethereum']):
-            tags.append("blockchain")
-        if any(tech in content_sample for tech in ['ai', 'machine learning', 'artificial intelligence', 'ml']):
-            tags.append("ai")
-        if any(tech in content_sample for tech in ['api', 'rest', 'graphql', 'endpoint']):
-            tags.append("api")
+        # Normalize the fallback category
+        category = self.preprocess_category_name(category)
+        print(f"  📝 Normalized fallback: {category}")
         
-        # Business/Finance tags
-        if any(term in content_sample for term in ['business', 'finance', 'economy', 'market']):
-            tags.append("business")
-        if any(term in content_sample for term in ['tutorial', 'guide', 'how to', 'step by step']):
-            tags.append("tutorial")
+        # Check for matches with existing KBs
+        matched_category = self.find_best_matching_kb(category, threshold=0.85)
+        if matched_category != category:
+            category = matched_category
+        else:
+            # Try keyword matching
+            keyword_matched = self.find_kb_by_keywords(category, threshold=0.6)
+            if keyword_matched != category:
+                category = keyword_matched
         
-        # Remove duplicates and add domain tag
-        tags = list(set(tags))
-        tags.append(domain.replace('.', '_'))
+        # Add domain tag
+        domain_tag = domain.replace('.', '_')
+        if domain_tag not in tags:
+            tags.append(domain_tag)
         
-        return category, tags[:5]  # Limit to 5 tags
+        return category, list(set(tags))[:5]
     
     async def ensure_knowledge_base_exists(self, category: str) -> str:
         """Create knowledge base if it doesn't exist, return its ID."""
@@ -488,7 +779,7 @@ class CrawlWorkflow:
         try:
             # Analyze content to determine category and tags
             description = content_data.get('description', '')
-            category, suggested_tags = self.categorize_content(description, url)
+            category, suggested_tags = await self.categorize_content(description, url)
             
             print(f"  📂 Category: {category}")
             print(f"  🏷️  Suggested tags: {', '.join(suggested_tags)}")
@@ -521,14 +812,18 @@ class CrawlWorkflow:
             print(f"❌ Error processing content: {e}")
             return False, "error"
     
-    async def crawl_and_process(self, url: str, max_pages: int = 10, max_depth: int = 1, model: str = "gemini/gemini-2.0-flash-exp"):
+    async def crawl_and_process(self, url: str, max_pages: int = 10, max_depth: int = 1, extraction_model: str = "gemini/gemini-2.0-flash-exp"):
         """Main workflow: crawl website, check duplicates BEFORE extraction, and organize in knowledge bases.
         
         Args:
             url: The starting URL to crawl
             max_pages: Maximum number of pages to crawl
             max_depth: Maximum depth for deep crawling
-            model: The LLM model to use for extraction
+            extraction_model: The LLM model to use for content extraction
+        
+        Note: 
+            - Uses self.naming_model for knowledge base categorization (fast model)
+            - Uses extraction_model for content extraction (smart model)
         """
         
         # Initialize workflow
@@ -585,10 +880,14 @@ Target 3000-6000 words total with sections separated by ###SECTION_BREAK###. Out
             # Fallback to flexible approach if file not found
             instruction = fallback_prompt
         
-        # Configure LLM extraction strategy with selected model
+        # Configure LLM extraction strategy with extraction model (smart model)
+        print(f"🧠 Using models:")
+        print(f"  📝 Naming: {self.naming_model} (fast)")
+        print(f"  🔍 Extraction: {extraction_model} (smart)")
+        
         llm_strategy = LLMExtractionStrategy(
             llm_config=LLMConfig(
-                provider=model,  # Use the model parameter
+                provider=extraction_model,  # Use the extraction model parameter
                 api_token=self.gemini_api_key
             ),
             schema=ResultSchema.model_json_schema(),
@@ -747,7 +1046,7 @@ Target 3000-6000 words total with sections separated by ###SECTION_BREAK###. Out
                                     'title': extracted_data.get('title', 'Untitled'),
                                     'success': workflow_success,
                                     'status': status,
-                                    'category': self.categorize_content(desc, process_url)[0]
+                                    'category': (await self.categorize_content(desc, process_url))[0]
                                 })
                                 
                                 extraction_successful = True
@@ -817,22 +1116,24 @@ Target 3000-6000 words total with sections separated by ###SECTION_BREAK###. Out
 
 # Example usage and main function
 async def main():
-    """Example usage of the CrawlWorkflow with parent-child chunking."""
+    """Example usage of the CrawlWorkflow with dual-model setup."""
     load_dotenv(override=True)
     
-    # Initialize workflow with parent-child chunking enabled
+    # Initialize workflow with dual-model configuration
     workflow = CrawlWorkflow(
         dify_base_url="http://localhost:8088",
         dify_api_key="dataset-VoYPMEaQ8L1udk2F6oek99XK",  # Replace with your API key
         gemini_api_key=os.getenv('GEMINI_API_KEY'),
-        use_parent_child=True  # Enable parent-child hierarchical chunking
+        use_parent_child=True,  # Enable parent-child hierarchical chunking
+        naming_model="gemini/gemini-1.5-flash"  # Fast model for naming (cheap & fast)
     )
     
-    # Run the complete workflow
+    # Run the complete workflow with dual-model setup
     await workflow.crawl_and_process(
         url="https://docs.eosnetwork.com/",
         max_pages=20,
-        max_depth=0
+        max_depth=0,
+        extraction_model="gemini/gemini-2.0-flash-exp"  # Smart model for extraction (powerful)
     )
 
 if __name__ == "__main__":

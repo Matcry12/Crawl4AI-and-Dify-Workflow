@@ -22,8 +22,8 @@ task_lock = threading.Lock()
 cancel_event = threading.Event()
 current_loop = None
 
-def run_async_crawl(url, max_pages, max_depth, api_key, base_url, llm_api_key, model):
-    """Run the async crawl in a separate thread."""
+def run_async_crawl(url, max_pages, max_depth, api_key, base_url, llm_api_key, extraction_model, naming_model=None):
+    """Run the async crawl in a separate thread with dual-model support."""
     global current_task, current_loop
     
     # Create new event loop for this thread
@@ -35,22 +35,45 @@ def run_async_crawl(url, max_pages, max_depth, api_key, base_url, llm_api_key, m
     cancel_event.clear()
     
     try:
-        # Determine which API key to use based on model
+        # Determine which API key to use based on models
         api_key_to_use = llm_api_key
         if not api_key_to_use:
             # Try to get from environment based on provider
-            if model.startswith('gemini/'):
+            # Check extraction model first, then naming model
+            model_to_check = extraction_model or naming_model
+            if model_to_check and model_to_check.startswith('gemini/'):
                 api_key_to_use = os.getenv('GEMINI_API_KEY')
-            elif model.startswith('openai/'):
+            elif model_to_check and model_to_check.startswith('openai/'):
                 api_key_to_use = os.getenv('OPENAI_API_KEY')
-            elif model.startswith('anthropic/'):
+            elif model_to_check and model_to_check.startswith('anthropic/'):
                 api_key_to_use = os.getenv('ANTHROPIC_API_KEY')
         
-        # Create workflow instance
+        # Use default naming model if not specified
+        if not naming_model:
+            naming_model = "gemini/gemini-1.5-flash"  # Default to fast model
+        
+        progress_queue.put({
+            'type': 'log',
+            'message': f'🧠 Dual-Model Configuration:',
+            'timestamp': datetime.now().isoformat()
+        })
+        progress_queue.put({
+            'type': 'log',
+            'message': f'  📝 Naming: {naming_model} (fast categorization)',
+            'timestamp': datetime.now().isoformat()
+        })
+        progress_queue.put({
+            'type': 'log',
+            'message': f'  🔍 Extraction: {extraction_model} (smart content processing)',
+            'timestamp': datetime.now().isoformat()
+        })
+        
+        # Create workflow instance with dual-model support
         workflow = CrawlWorkflow(
             dify_base_url=base_url,
             dify_api_key=api_key,
-            gemini_api_key=api_key_to_use  # Still using gemini_api_key param for compatibility
+            gemini_api_key=api_key_to_use,
+            naming_model=naming_model  # Add naming model parameter
         )
         
         # Monkey patch print to capture output
@@ -75,7 +98,7 @@ def run_async_crawl(url, max_pages, max_depth, api_key, base_url, llm_api_key, m
                     url=url,
                     max_pages=max_pages,
                     max_depth=max_depth,
-                    model=model
+                    extraction_model=extraction_model
                 )
             )
             
@@ -139,7 +162,8 @@ def start_crawl():
     api_key = data.get('api_key', 'dataset-VoYPMEaQ8L1udk2F6oek99XK')
     base_url = data.get('base_url', 'http://localhost:8088')
     llm_api_key = data.get('llm_api_key', '')
-    model = data.get('model', 'gemini/gemini-2.0-flash-exp')
+    extraction_model = data.get('extraction_model', 'gemini/gemini-2.0-flash-exp')
+    naming_model = data.get('naming_model', 'gemini/gemini-1.5-flash')
     
     if not url:
         return jsonify({
@@ -150,17 +174,19 @@ def start_crawl():
     # Check if API key is provided or available in environment
     if not llm_api_key:
         env_key = None
-        if model.startswith('gemini/'):
+        # Check both models for API key requirement
+        primary_model = extraction_model or naming_model
+        if primary_model.startswith('gemini/'):
             env_key = os.getenv('GEMINI_API_KEY')
-        elif model.startswith('openai/'):
+        elif primary_model.startswith('openai/'):
             env_key = os.getenv('OPENAI_API_KEY')
-        elif model.startswith('anthropic/'):
+        elif primary_model.startswith('anthropic/'):
             env_key = os.getenv('ANTHROPIC_API_KEY')
         
         if not env_key:
             return jsonify({
                 'status': 'error',
-                'message': f'API key is required for {model}. Please provide it in the form or set it in .env file.'
+                'message': f'API key is required for models {naming_model} and {extraction_model}. Please provide it in the form or set it in .env file.'
             }), 400
     
     # Clear previous progress
@@ -171,7 +197,7 @@ def start_crawl():
     with task_lock:
         current_task = threading.Thread(
             target=run_async_crawl,
-            args=(url, max_pages, max_depth, api_key, base_url, llm_api_key, model)
+            args=(url, max_pages, max_depth, api_key, base_url, llm_api_key, extraction_model, naming_model)
         )
         current_task.start()
     
