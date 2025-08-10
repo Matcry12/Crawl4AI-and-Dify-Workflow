@@ -22,7 +22,7 @@ task_lock = threading.Lock()
 cancel_event = threading.Event()
 current_loop = None
 
-def run_async_crawl(url, max_pages, max_depth, api_key, base_url, llm_api_key, extraction_model, naming_model=None):
+def run_async_crawl(url, max_pages, max_depth, api_key, base_url, llm_api_key, extraction_model, naming_model=None, knowledge_base_mode='automatic', selected_knowledge_base=None):
     """Run the async crawl in a separate thread with dual-model support."""
     global current_task, current_loop
     
@@ -73,7 +73,9 @@ def run_async_crawl(url, max_pages, max_depth, api_key, base_url, llm_api_key, e
             dify_base_url=base_url,
             dify_api_key=api_key,
             gemini_api_key=api_key_to_use,
-            naming_model=naming_model  # Add naming model parameter
+            naming_model=naming_model,  # Add naming model parameter
+            knowledge_base_mode=knowledge_base_mode,
+            selected_knowledge_base=selected_knowledge_base
         )
         
         # Monkey patch print to capture output
@@ -164,6 +166,8 @@ def start_crawl():
     llm_api_key = data.get('llm_api_key', '')
     extraction_model = data.get('extraction_model', 'gemini/gemini-2.0-flash-exp')
     naming_model = data.get('naming_model', 'gemini/gemini-1.5-flash')
+    knowledge_base_mode = data.get('knowledge_base_mode', 'automatic')
+    selected_knowledge_base = data.get('selected_knowledge_base', None)
     
     if not url:
         return jsonify({
@@ -197,7 +201,7 @@ def start_crawl():
     with task_lock:
         current_task = threading.Thread(
             target=run_async_crawl,
-            args=(url, max_pages, max_depth, api_key, base_url, llm_api_key, extraction_model, naming_model)
+            args=(url, max_pages, max_depth, api_key, base_url, llm_api_key, extraction_model, naming_model, knowledge_base_mode, selected_knowledge_base)
         )
         current_task.start()
     
@@ -248,6 +252,56 @@ def status():
     return jsonify({
         'is_running': is_running
     })
+
+@app.route('/knowledge_bases')
+def get_knowledge_bases():
+    """Get list of available knowledge bases."""
+    try:
+        # Get Dify configuration from request args or use defaults
+        base_url = request.args.get('base_url', 'http://localhost:8088')
+        api_key = request.args.get('api_key', 'dataset-VoYPMEaQ8L1udk2F6oek99XK')
+        
+        # Import DifyAPI
+        from Test_dify import DifyAPI
+        dify_api = DifyAPI(base_url=base_url, api_key=api_key)
+        
+        # Get knowledge bases
+        response = dify_api.get_knowledge_base_list()
+        
+        knowledge_bases = {}
+        if response.status_code == 200:
+            kb_data = response.json()
+            
+            # Handle different possible response structures
+            kb_list = []
+            if isinstance(kb_data, dict):
+                if 'data' in kb_data:
+                    kb_list = kb_data['data']
+                elif 'datasets' in kb_data:
+                    kb_list = kb_data['datasets']
+            elif isinstance(kb_data, list):
+                kb_list = kb_data
+            
+            # Process knowledge bases
+            for kb in kb_list:
+                if isinstance(kb, dict):
+                    kb_name = kb.get('name') or kb.get('title') or kb.get('dataset_name')
+                    kb_id = kb.get('id') or kb.get('dataset_id') or kb.get('uuid')
+                    
+                    if kb_name and kb_id:
+                        knowledge_bases[kb_name] = kb_id
+        
+        return jsonify({
+            'status': 'success',
+            'knowledge_bases': knowledge_bases
+        })
+        
+    except Exception as e:
+        return jsonify({
+            'status': 'error',
+            'message': str(e),
+            'knowledge_bases': {}
+        }), 500
 
 @app.route('/cancel', methods=['POST'])
 def cancel_crawl():

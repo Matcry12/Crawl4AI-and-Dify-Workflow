@@ -21,7 +21,7 @@ from Test_dify import DifyAPI
 
 
 class CrawlWorkflow:
-    def __init__(self, dify_base_url="http://localhost:8088", dify_api_key=None, gemini_api_key=None, use_parent_child=True, naming_model=None):
+    def __init__(self, dify_base_url="http://localhost:8088", dify_api_key=None, gemini_api_key=None, use_parent_child=True, naming_model=None, knowledge_base_mode='automatic', selected_knowledge_base=None):
         """Initialize the crawl workflow with API configurations.
         
         Args:
@@ -31,6 +31,8 @@ class CrawlWorkflow:
             use_parent_child: Enable parent-child chunking for extraction
             naming_model: Custom model for knowledge base naming (e.g., "gemini/gemini-1.5-flash" for fast naming)
                          If None, uses the same model as extraction
+            knowledge_base_mode: 'automatic' or 'manual' - how to select knowledge base
+            selected_knowledge_base: ID of the manually selected knowledge base (when mode is 'manual')
         """
         self.dify_api = DifyAPI(base_url=dify_base_url, api_key=dify_api_key)
         self.gemini_api_key = gemini_api_key or os.getenv('GEMINI_API_KEY')
@@ -40,6 +42,8 @@ class CrawlWorkflow:
         self.document_cache = {}  # Cache of existing documents by knowledge base {kb_id: {doc_name: doc_id}}
         self._initialized = False  # Track initialization state
         self.use_parent_child = use_parent_child  # Enable parent-child chunking
+        self.knowledge_base_mode = knowledge_base_mode  # 'automatic' or 'manual'
+        self.selected_knowledge_base = selected_knowledge_base  # ID for manual mode
         
     async def initialize(self):
         """Initialize workflow by fetching existing knowledge bases and tags."""
@@ -777,24 +781,48 @@ Examples:
         Returns: (success, status)
         """
         try:
-            # Analyze content to determine category and tags
-            description = content_data.get('description', '')
-            category, suggested_tags = await self.categorize_content(description, url)
-            
-            print(f"  📂 Category: {category}")
-            print(f"  🏷️  Suggested tags: {', '.join(suggested_tags)}")
-            
-            # Ensure knowledge base exists
-            kb_id = await self.ensure_knowledge_base_exists(category)
-            if not kb_id:
-                print(f"❌ Could not create or find knowledge base for category '{category}', trying fallback...")
-                # Try to create a generic fallback knowledge base
-                fallback_kb_id = await self.ensure_knowledge_base_exists("general")
-                if not fallback_kb_id:
-                    print(f"❌ Even fallback knowledge base failed, skipping content")
-                    return False, "failed_kb_creation"
-                kb_id = fallback_kb_id
-                print(f"✅ Using fallback knowledge base: general (ID: {kb_id})")
+            # Handle knowledge base selection based on mode
+            if self.knowledge_base_mode == 'manual' and self.selected_knowledge_base:
+                # Manual mode: use the selected knowledge base
+                kb_id = self.selected_knowledge_base
+                
+                # Get the KB name from our cache
+                kb_name = None
+                for name, id in self.knowledge_bases.items():
+                    if id == kb_id:
+                        kb_name = name
+                        break
+                
+                if not kb_name:
+                    # Try to get KB name from API
+                    kb_name = f"Knowledge Base {kb_id}"
+                
+                print(f"  📂 Using manually selected knowledge base: {kb_name}")
+                
+                # Still analyze content for tags
+                description = content_data.get('description', '')
+                _, suggested_tags = await self.categorize_content(description, url)
+                print(f"  🏷️  Suggested tags: {', '.join(suggested_tags)}")
+                
+            else:
+                # Automatic mode: use smart categorization
+                description = content_data.get('description', '')
+                category, suggested_tags = await self.categorize_content(description, url)
+                
+                print(f"  📂 Category: {category}")
+                print(f"  🏷️  Suggested tags: {', '.join(suggested_tags)}")
+                
+                # Ensure knowledge base exists
+                kb_id = await self.ensure_knowledge_base_exists(category)
+                if not kb_id:
+                    print(f"❌ Could not create or find knowledge base for category '{category}', trying fallback...")
+                    # Try to create a generic fallback knowledge base
+                    fallback_kb_id = await self.ensure_knowledge_base_exists("general")
+                    if not fallback_kb_id:
+                        print(f"❌ Even fallback knowledge base failed, skipping content")
+                        return False, "failed_kb_creation"
+                    kb_id = fallback_kb_id
+                    print(f"✅ Using fallback knowledge base: general (ID: {kb_id})")
             
             # Push content to knowledge base with duplicate detection
             success, status = await self.push_to_knowledge_base(kb_id, content_data, url)
@@ -905,6 +933,18 @@ Target 3000-6000 words total with sections separated by ###SECTION_BREAK###. Out
         
         # First, collect URLs without extraction to check for duplicates
         print("\n🔍 Phase 1: Collecting URLs and checking for duplicates...")
+        
+        # Display knowledge base mode
+        if self.knowledge_base_mode == 'manual' and self.selected_knowledge_base:
+            kb_name = None
+            for name, id in self.knowledge_bases.items():
+                if id == self.selected_knowledge_base:
+                    kb_name = name
+                    break
+            kb_display = kb_name or f"ID: {self.selected_knowledge_base}"
+            print(f"📚 Knowledge Base Mode: Manual - All content will be pushed to '{kb_display}'")
+        else:
+            print(f"🤖 Knowledge Base Mode: Automatic - Content will be categorized intelligently")
         
         # Configure URL collection (no extraction)
         url_collection_config = CrawlerRunConfig(

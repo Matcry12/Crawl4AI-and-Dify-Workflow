@@ -302,6 +302,24 @@
                         <label for="api_key">Dify API Key</label>
                         <input type="text" id="api_key" name="api_key" value="dataset-VoYPMEaQ8L1udk2F6oek99XK">
                     </div>
+                    
+                    <div class="form-group">
+                        <label for="knowledge_base_mode">📚 Knowledge Base Selection</label>
+                        <select id="knowledge_base_mode" name="knowledge_base_mode" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 16px;" onchange="handleKnowledgeBaseModeChange()">
+                            <option value="automatic">🤖 Automatic (Smart categorization)</option>
+                            <option value="manual">📋 Select specific knowledge base</option>
+                        </select>
+                        <small style="color: #666; display: block; margin-top: 5px;">Choose automatic categorization or select a specific knowledge base</small>
+                    </div>
+                    
+                    <div class="form-group" id="knowledgeBaseSelectGroup" style="display: none;">
+                        <label for="selected_knowledge_base">Select Knowledge Base</label>
+                        <select id="selected_knowledge_base" name="selected_knowledge_base" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 16px;">
+                            <option value="">Loading knowledge bases...</option>
+                        </select>
+                        <button type="button" class="btn" style="margin-top: 10px; padding: 8px 16px; font-size: 14px;" onclick="refreshKnowledgeBases()">🔄 Refresh List</button>
+                        <small style="color: #666; display: block; margin-top: 5px;">Select the knowledge base where content will be stored</small>
+                    </div>
                 </div>
                 
                 <button type="submit" class="btn" id="startBtn">
@@ -328,12 +346,75 @@
     
     <script>
         let eventSource = null;
+        let knowledgeBases = {};
         
         function toggleAdvanced() {
             const settings = document.getElementById('advancedSettings');
             const arrow = document.getElementById('advancedArrow');
             settings.classList.toggle('show');
             arrow.textContent = settings.classList.contains('show') ? '▼' : '▶';
+        }
+        
+        function handleKnowledgeBaseModeChange() {
+            const mode = document.getElementById('knowledge_base_mode').value;
+            const selectGroup = document.getElementById('knowledgeBaseSelectGroup');
+            
+            if (mode === 'manual') {
+                selectGroup.style.display = 'block';
+                // Load knowledge bases if not already loaded
+                if (Object.keys(knowledgeBases).length === 0) {
+                    loadKnowledgeBases();
+                }
+            } else {
+                selectGroup.style.display = 'none';
+            }
+        }
+        
+        async function loadKnowledgeBases() {
+            const select = document.getElementById('selected_knowledge_base');
+            select.innerHTML = '<option value="">Loading...</option>';
+            
+            // Get current Dify configuration
+            const baseUrl = document.getElementById('base_url').value;
+            const apiKey = document.getElementById('api_key').value;
+            
+            try {
+                const response = await fetch(`/knowledge_bases?base_url=${encodeURIComponent(baseUrl)}&api_key=${encodeURIComponent(apiKey)}`, {
+                    method: 'GET',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    knowledgeBases = data.knowledge_bases || {};
+                    
+                    // Update select options
+                    select.innerHTML = '<option value="">-- Select a knowledge base --</option>';
+                    
+                    // Add existing knowledge bases
+                    Object.entries(knowledgeBases).forEach(([name, id]) => {
+                        const option = document.createElement('option');
+                        option.value = id;
+                        option.textContent = name;
+                        select.appendChild(option);
+                    });
+                    
+                    if (Object.keys(knowledgeBases).length === 0) {
+                        select.innerHTML = '<option value="">No knowledge bases found</option>';
+                    }
+                } else {
+                    select.innerHTML = '<option value="">Error loading knowledge bases</option>';
+                }
+            } catch (error) {
+                console.error('Error loading knowledge bases:', error);
+                select.innerHTML = '<option value="">Error loading knowledge bases</option>';
+            }
+        }
+        
+        function refreshKnowledgeBases() {
+            loadKnowledgeBases();
         }
         
         function handleModelChange() {
@@ -494,6 +575,17 @@
                 }
             }
             
+            const knowledgeBaseMode = document.getElementById('knowledge_base_mode').value;
+            const selectedKnowledgeBase = document.getElementById('selected_knowledge_base').value;
+            
+            // Validate manual selection
+            if (knowledgeBaseMode === 'manual' && !selectedKnowledgeBase) {
+                alert('Please select a knowledge base when using manual mode');
+                document.getElementById('startBtn').disabled = false;
+                updateStatus('idle');
+                return;
+            }
+            
             const formData = {
                 url: document.getElementById('url').value,
                 max_pages: document.getElementById('max_pages').value,
@@ -502,7 +594,9 @@
                 api_key: document.getElementById('api_key').value,
                 llm_api_key: document.getElementById('llm_api_key').value,
                 extraction_model: selectedExtractionModel,
-                naming_model: selectedNamingModel
+                naming_model: selectedNamingModel,
+                knowledge_base_mode: knowledgeBaseMode,
+                selected_knowledge_base: selectedKnowledgeBase
             };
             
             // Clear previous logs
