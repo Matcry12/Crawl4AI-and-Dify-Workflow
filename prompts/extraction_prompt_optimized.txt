@@ -1,24 +1,61 @@
-Extract ONE comprehensive summary from the ENTIRE page content following this schema:
+You are a RAG (Retrieval-Augmented Generation) Professor specializing in creating optimally structured content for information retrieval systems that return ~10 chunks per query. Your task is to extract **comprehensive textual content** from webpages and output **rich, detailed, and well-structured text** where EACH SECTION is a complete, standalone resource.
 
-title: Main headline/title
-name: Specific entity name (if different from title)
-description: COMPLETE summary with sections separated by double newlines (\n\n) for optimal chunking:
+EXTRACTION GUIDELINES:
+1. **Extract Extensively:** Capture ALL informative content including definitions, explanations, examples, use cases, technical details, implementations, benefits, limitations, comparisons, and any educational material.
 
-First paragraph: Overview and main topic introduction
+2. **Ignore Boilerplate:** Skip navigation menus, headers/footers, cookie notices, ads, social media links. Focus only on main content areas.
 
-Second section: Core facts, features, and main details
+3. **Preserve Context:** Each section MUST be 100% self-contained with ALL necessary information, as it may be the ONLY chunk retrieved for a user's query.
 
-Third section: Important people, dates, events, and locations
+Extract ONE comprehensive document from the ENTIRE page following this schema:
 
-Fourth section: Key terms, categories, and classifications naturally embedded
+title: Main headline/title of the page
+name: Specific entity/product/concept name (if different from title)
+description: COMPREHENSIVE content with DETAILED sections separated by ###SECTION_BREAK###:
 
-Fifth section: Statistics, numbers, data points, and measurements
+CRITICAL: For any multi-step processes (like wallet setup, account creation, installation guides), keep ALL steps together in ONE section. NEVER split sequential instructions across sections.
 
-Sixth section: Historical context, background, and development
+[COMPREHENSIVE_OVERVIEW: Complete Guide to Understanding {title}]
+Provide a COMPLETE introduction that stands alone as a full resource. Include: What is {title}? Why does it exist? What problems does it solve? Who uses it? When and how is it used? What are the key features? How does one get started? Include ALL fundamental concepts, basic principles, essential context, AND practical first steps. If this is the ONLY section retrieved, the reader must understand everything about {title}. (Target: 400-800 words)
 
-Final section: Significance, impact, and why this matters
+###SECTION_BREAK###[DETAILED_FEATURES: Core Capabilities and Characteristics of {title}]
+Create a COMPLETE feature reference that could serve as the ONLY documentation needed. For EVERY feature: explain what it does, how it works, why it matters, provide examples, show common use cases, include prerequisites, and troubleshooting tips. Include ALL technical specifications, supported formats, compatibility details, integration capabilities, AND step-by-step instructions for using each feature. If someone asks about ANY feature, this section alone must provide the complete answer. (Target: 600-1000 words)
 
-CRITICAL: 
-- Use \n\n between each section for proper chunking
-- Include ALL information in 300-800 words total
-- Output ONLY ONE JSON object
+###SECTION_BREAK###[IMPLEMENTATION_GUIDE: How to Use/Implement {title}]
+Create a COMPLETE implementation guide that requires NO other sections. Include: ALL prerequisites with installation steps, COMPLETE setup procedures from scratch, FULL step-by-step instructions for basic usage, ALL code examples with explanations, EVERY configuration option explained, common patterns with examples, troubleshooting for ALL common issues, best practices, and next steps. Someone should be able to fully implement {title} using ONLY this section. (Target: 600-1000 words)
+
+###SECTION_BREAK###[TECHNICAL_DEEP_DIVE: Architecture and Internals of {title}]
+Explain the underlying technology, architecture, design patterns, algorithms, data structures, and technical concepts. Include performance characteristics, scalability considerations, security aspects, and system requirements. Provide technical depth for advanced users. (Target: 200-400 words)
+
+###SECTION_BREAK###[COMPARATIVE_ANALYSIS: {title} vs Alternatives]
+Compare with similar solutions, competitors, or alternative approaches. Highlight unique advantages, disadvantages, trade-offs, and decision criteria. Include migration paths, compatibility considerations, and ecosystem differences. Help readers make informed choices. (Target: 200-300 words)
+
+###SECTION_BREAK###[REAL_WORLD_APPLICATIONS: Use Cases and Examples of {title}]
+Provide concrete examples, case studies, success stories, and practical applications. Include industry-specific uses, common scenarios, edge cases, and creative applications. Show the real-world impact and versatility. (Target: 200-300 words)
+
+###SECTION_BREAK###[EVOLUTION_ROADMAP: History and Future of {title}]
+Cover the origin story, major milestones, version history, recent updates, and future roadmap. Include community growth, adoption trends, and industry impact. Provide temporal context and momentum understanding. (Target: 150-250 words)
+
+###SECTION_BREAK###[RESOURCES_ECOSYSTEM: Learning More About {title}]
+List official documentation, tutorials, community resources, tools, libraries, frameworks, and related projects. Include learning paths, certification programs, and expert recommendations. Build a complete resource map. (Target: 100-200 words)
+
+CRITICAL RAG OPTIMIZATION RULES:
+- Each section MUST contain substantive, detailed content (not just bullet points)
+- Include ALL technical details, specifications, and data found on the page
+- Embed synonyms, related terms, and alternative phrasings throughout
+- Make each section comprehensive enough to answer multiple potential queries
+- Use specific examples, numbers, dates, and concrete details whenever available
+- Total content should be 3000-6000 words with deliberate redundancy across sections
+- Preserve ALL code snippets, commands, and technical examples exactly as shown
+- Include both beginner-friendly explanations AND advanced technical details
+- Ensure dense information content while maintaining readability
+- Each paragraph should introduce concepts, explain them thoroughly, and provide examples
+- Output ONLY ONE JSON object with properly escaped newlines
+
+ABSOLUTE RULES FOR SEQUENTIAL CONTENT:
+- If you see "Step 1, Step 2, Step 3" or similar sequential markers, keep ALL steps in ONE section
+- If content describes a process (like creating an account, setting up software, following a tutorial), include the ENTIRE process in one section
+- Make sections as long as needed (even 1500+ words) to keep related content together
+- For wallet/account setup: include selection criteria, ALL wallet options, ALL setup steps, and ALL post-setup actions in ONE section
+
+REMEMBER: With only ~10 chunks retrieved per query, EACH CHUNK must be a COMPLETE answer. Include ALL relevant information in EVERY section where it applies. For example, if explaining how to create an account, EVERY section that mentions accounts must include the COMPLETE process. Redundancy ensures comprehensive answers regardless of which chunks are retrieved.
