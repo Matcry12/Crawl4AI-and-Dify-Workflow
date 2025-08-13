@@ -126,6 +126,116 @@
             font-weight: 600;
             margin-bottom: 15px;
             color: #333;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .log-toggle {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 14px;
+            font-weight: normal;
+        }
+        
+        .log-toggle-btn {
+            padding: 6px 12px;
+            border: 1px solid #ddd;
+            background-color: #f5f5f5;
+            color: #666;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-size: 13px;
+        }
+        
+        .log-toggle-btn.active {
+            background-color: #2563eb;
+            color: white;
+            border-color: #2563eb;
+        }
+        
+        .log-toggle-btn:hover:not(.active) {
+            background-color: #e5e7eb;
+        }
+        
+        .basic-log-container {
+            display: none;
+            padding: 20px;
+            background-color: #f8f9fa;
+            border-radius: 6px;
+            font-family: 'Consolas', 'Monaco', monospace;
+        }
+        
+        .basic-log-container.active {
+            display: block;
+        }
+        
+        .basic-log-item {
+            margin-bottom: 10px;
+            padding: 12px;
+            background-color: white;
+            border-radius: 4px;
+            border-left: 4px solid #ddd;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+            transition: all 0.3s ease;
+            opacity: 0.5;
+        }
+        
+        .basic-log-item.active {
+            border-left-color: #2563eb;
+            opacity: 1;
+        }
+        
+        .basic-log-item.completed {
+            border-left-color: #10b981;
+            opacity: 1;
+        }
+        
+        .basic-log-label {
+            font-weight: 600;
+            color: #999;
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            transition: color 0.3s ease;
+        }
+        
+        .basic-log-item.active .basic-log-label,
+        .basic-log-item.completed .basic-log-label {
+            color: #555;
+        }
+        
+        .basic-log-value {
+            margin-top: 4px;
+            color: #ccc;
+            font-size: 14px;
+            transition: color 0.3s ease;
+        }
+        
+        .basic-log-item.active .basic-log-value,
+        .basic-log-item.completed .basic-log-value {
+            color: #333;
+        }
+        
+        .basic-log-progress {
+            margin-top: 15px;
+            padding: 10px;
+            background-color: #e5e7eb;
+            border-radius: 4px;
+            text-align: center;
+            font-size: 13px;
+            color: #6b7280;
+        }
+        
+        .basic-log-progress.active {
+            background-color: #dbeafe;
+            color: #1e40af;
+        }
+        
+        #progressLog.hidden {
+            display: none;
         }
         
         .log-entry {
@@ -458,8 +568,33 @@
         </div>
         
         <div class="progress-container">
-            <div class="progress-title">📋 Progress Log</div>
-            <div id="progressLog">
+            <div class="progress-title">
+                <span>📋 Progress Log</span>
+                <div class="log-toggle">
+                    <button class="log-toggle-btn active" id="basicViewBtn" onclick="toggleLogView('basic')">Basic View</button>
+                    <button class="log-toggle-btn" id="detailedViewBtn" onclick="toggleLogView('detailed')">Detailed View</button>
+                </div>
+            </div>
+            
+            <div id="basicLogContainer" class="basic-log-container active">
+                <div class="basic-log-item" id="currentPageItem">
+                    <div class="basic-log-label">Current Page <span id="pageCounter" style="color: #2563eb; font-weight: normal;"></span></div>
+                    <div class="basic-log-value" id="currentPageDisplay">Waiting to start...</div>
+                </div>
+                <div class="basic-log-item" id="processingModeItem">
+                    <div class="basic-log-label">Processing Mode</div>
+                    <div class="basic-log-value" id="processingModeDisplay">Pending...</div>
+                </div>
+                <div class="basic-log-item" id="knowledgeBaseItem">
+                    <div class="basic-log-label">Knowledge Base</div>
+                    <div class="basic-log-value" id="knowledgeBaseDisplay">Pending...</div>
+                </div>
+                <div class="basic-log-progress" id="progressStatus">
+                    Ready to start crawling...
+                </div>
+            </div>
+            
+            <div id="progressLog" class="hidden">
                 <div class="log-entry info">Ready to start crawling...</div>
             </div>
         </div>
@@ -468,6 +603,179 @@
     <script>
         let eventSource = null;
         let knowledgeBases = {};
+        let currentLogView = 'basic';
+        let currentPageInfo = {
+            page: 'Waiting to start...',
+            mode: 'Pending...',
+            knowledgeBase: 'Pending...'
+        };
+        let pageStage = 'idle'; // idle, page_detected, mode_detected, kb_detected
+        let pageCount = 0;
+        
+        function toggleLogView(view) {
+            currentLogView = view;
+            const basicBtn = document.getElementById('basicViewBtn');
+            const detailedBtn = document.getElementById('detailedViewBtn');
+            const basicContainer = document.getElementById('basicLogContainer');
+            const detailedLog = document.getElementById('progressLog');
+            
+            if (view === 'basic') {
+                basicBtn.classList.add('active');
+                detailedBtn.classList.remove('active');
+                basicContainer.classList.add('active');
+                detailedLog.classList.add('hidden');
+            } else {
+                basicBtn.classList.remove('active');
+                detailedBtn.classList.add('active');
+                basicContainer.classList.remove('active');
+                detailedLog.classList.remove('hidden');
+            }
+        }
+        
+        function updateBasicLogDisplay() {
+            document.getElementById('currentPageDisplay').textContent = currentPageInfo.page;
+            document.getElementById('processingModeDisplay').textContent = currentPageInfo.mode;
+            document.getElementById('knowledgeBaseDisplay').textContent = currentPageInfo.knowledgeBase;
+            
+            // Update page counter
+            if (pageCount > 0) {
+                document.getElementById('pageCounter').textContent = `(Page ${pageCount})`;
+            } else {
+                document.getElementById('pageCounter').textContent = '';
+            }
+            
+            // Update item states based on stage
+            const pageItem = document.getElementById('currentPageItem');
+            const modeItem = document.getElementById('processingModeItem');
+            const kbItem = document.getElementById('knowledgeBaseItem');
+            const progressStatus = document.getElementById('progressStatus');
+            
+            // Reset all items first
+            pageItem.className = 'basic-log-item';
+            modeItem.className = 'basic-log-item';
+            kbItem.className = 'basic-log-item';
+            
+            // Update based on current stage
+            switch(pageStage) {
+                case 'page_detected':
+                    pageItem.className = 'basic-log-item active';
+                    progressStatus.textContent = `Extracting content from this page...`;
+                    progressStatus.className = 'basic-log-progress active';
+                    break;
+                case 'mode_detected':
+                    pageItem.className = 'basic-log-item completed';
+                    modeItem.className = 'basic-log-item active';
+                    progressStatus.textContent = `Determining processing mode...`;
+                    break;
+                case 'kb_detected':
+                    pageItem.className = 'basic-log-item completed';
+                    modeItem.className = 'basic-log-item completed';
+                    kbItem.className = 'basic-log-item active';
+                    progressStatus.textContent = `Saving to knowledge base...`;
+                    break;
+                case 'completed':
+                    pageItem.className = 'basic-log-item completed';
+                    modeItem.className = 'basic-log-item completed';
+                    kbItem.className = 'basic-log-item completed';
+                    progressStatus.textContent = `Done with this page.`;
+                    progressStatus.className = 'basic-log-progress';
+                    break;
+                default:
+                    progressStatus.textContent = 'Waiting for pages to process...';
+                    progressStatus.className = 'basic-log-progress';
+            }
+        }
+        
+        function resetPageInfo() {
+            currentPageInfo = {
+                page: 'Detecting...',
+                mode: 'Pending...',
+                knowledgeBase: 'Pending...'
+            };
+            pageStage = 'idle';
+            updateBasicLogDisplay();
+        }
+        
+        function extractPageInfoFromLog(message) {
+            
+            // Detect new page and reset if needed - try multiple patterns
+            const newPageMatch = message.match(/\[\d+\/\d+\]\s*Processing:\s*(https?:\/\/[^\s]+)/i) ||
+                                message.match(/Processing:\s*(https?:\/\/[^\s]+)/i) ||
+                                message.match(/📄\s*Processing document:\s*(https?:\/\/[^\s]+)/i) ||
+                                message.match(/Extracting content from:\s*(https?:\/\/[^\s]+)/i) ||
+                                message.match(/🌐\s*Crawling:\s*(https?:\/\/[^\s]+)/i) ||
+                                message.match(/✅\s*\[Page \d+\]\s*(https?:\/\/[^\s]+)/i);
+            
+            if (newPageMatch) {
+                // Check if this is a new page (different from current)
+                const newUrl = newPageMatch[1];
+                if (pageStage === 'idle' || currentPageInfo.page !== newUrl) {
+                    // Reset for new page
+                    pageCount++;
+                    resetPageInfo();
+                    currentPageInfo.page = newUrl;
+                    pageStage = 'page_detected';
+                    updateBasicLogDisplay();
+                }
+            }
+            
+            // Extract mode information (only if we've detected a page)
+            if (pageStage !== 'idle' && pageStage !== 'completed') {
+                if (message.includes('📋 Using processing mode: full_doc') || message.includes('📄 Selected mode: full_doc')) {
+                    currentPageInfo.mode = '📄 Full Doc Mode';
+                    if (pageStage === 'page_detected') pageStage = 'mode_detected';
+                } else if (message.includes('📋 Using processing mode: paragraph') || message.includes('📄 Selected mode: paragraph')) {
+                    currentPageInfo.mode = '📚 Paragraph Mode';
+                    if (pageStage === 'page_detected') pageStage = 'mode_detected';
+                } else if (message.includes('✋ Manual mode: FULL DOC')) {
+                    currentPageInfo.mode = '📄 Full Doc (Manual)';
+                    if (pageStage === 'page_detected') pageStage = 'mode_detected';
+                } else if (message.includes('✋ Manual mode: PARAGRAPH')) {
+                    currentPageInfo.mode = '📚 Paragraph (Manual)';
+                    if (pageStage === 'page_detected') pageStage = 'mode_detected';
+                } else if (message.includes('🔀 Dual-mode enabled')) {
+                    // Extract the specific type
+                    if (message.includes('WORD count threshold')) {
+                        currentPageInfo.mode = '📏 Word Threshold Mode';
+                    } else if (message.includes('Intelligent mode enabled')) {
+                        currentPageInfo.mode = '🤖 AI Analysis Mode';
+                    }
+                    if (pageStage === 'page_detected') pageStage = 'mode_detected';
+                }
+            }
+            
+            // Extract knowledge base information
+            if (pageStage === 'page_detected' || pageStage === 'mode_detected' || pageStage === 'kb_detected') {
+                // Check for category/knowledge base info
+                if (message.includes('📂 Category:')) {
+                    const kbMatch = message.match(/📂\s*Category:\s*([^\n]+)/i);
+                    if (kbMatch) {
+                        currentPageInfo.knowledgeBase = kbMatch[1].trim();
+                        if (pageStage !== 'kb_detected') pageStage = 'kb_detected';
+                    }
+                } else if (message.includes('Found existing knowledge base:') || message.includes('Created new knowledge base:')) {
+                    const kbMatch = message.match(/(?:Found existing|Created new) knowledge base:\s*([^(]+)/i);
+                    if (kbMatch) {
+                        currentPageInfo.knowledgeBase = kbMatch[1].trim();
+                        if (pageStage !== 'kb_detected') pageStage = 'kb_detected';
+                    }
+                }
+                
+                // Check if document was successfully pushed
+                if (message.includes('✅ Successfully pushed new document')) {
+                    pageStage = 'completed';
+                    // Auto-reset after 2 seconds
+                    setTimeout(() => {
+                        if (pageStage === 'completed') {
+                            resetPageInfo();
+                        }
+                    }, 2000);
+                }
+            }
+            
+            // Update display
+            updateBasicLogDisplay();
+        }
         
         function toggleAdvanced() {
             const settings = document.getElementById('advancedSettings');
@@ -644,6 +952,40 @@
             entry.textContent = message;
             logContainer.appendChild(entry);
             logContainer.scrollTop = logContainer.scrollHeight;
+            
+            // Extract information for basic view
+            extractPageInfoFromLog(message);
+            
+            // Simple fallback patterns for immediate display
+            if (currentLogView === 'basic') {
+                // URL detection
+                if (message.includes('Processing:') && message.includes('http')) {
+                    const urlMatch = message.match(/(https?:\/\/[^\s]+)/);
+                    if (urlMatch) {
+                        document.getElementById('currentPageDisplay').textContent = urlMatch[1];
+                        document.getElementById('currentPageItem').className = 'basic-log-item active';
+                    }
+                }
+                
+                // Mode detection
+                if (message.includes('Selected mode:') || message.includes('Using processing mode:')) {
+                    document.getElementById('processingModeItem').className = 'basic-log-item active';
+                    if (message.includes('full_doc')) {
+                        document.getElementById('processingModeDisplay').textContent = '📄 Full Doc Mode';
+                    } else if (message.includes('paragraph')) {
+                        document.getElementById('processingModeDisplay').textContent = '📚 Paragraph Mode';
+                    }
+                }
+                
+                // Knowledge base detection
+                if (message.includes('Category:') || message.includes('knowledge base')) {
+                    document.getElementById('knowledgeBaseItem').className = 'basic-log-item active';
+                    const catMatch = message.match(/Category:\s*([^\n]+)/);
+                    if (catMatch) {
+                        document.getElementById('knowledgeBaseDisplay').textContent = catMatch[1].trim();
+                    }
+                }
+            }
         }
         
         function updateStatus(status) {
@@ -803,8 +1145,20 @@
                 custom_llm_api_key: customLLMApiKey
             };
             
-            // Clear previous logs
+            // Clear previous logs and reset basic view
             document.getElementById('progressLog').innerHTML = '';
+            pageCount = 0;
+            pageStage = 'idle';
+            currentPageInfo = {
+                page: 'Waiting for first page...',
+                mode: 'Pending...',
+                knowledgeBase: 'Pending...'
+            };
+            updateBasicLogDisplay();
+            
+            // Update progress status
+            document.getElementById('progressStatus').textContent = 'Starting crawl...';
+            document.getElementById('progressStatus').className = 'basic-log-progress active';
             
             // Disable submit button
             document.getElementById('startBtn').disabled = true;
