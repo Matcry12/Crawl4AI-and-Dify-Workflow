@@ -126,6 +126,116 @@
             font-weight: 600;
             margin-bottom: 15px;
             color: #333;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .log-toggle {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 14px;
+            font-weight: normal;
+        }
+        
+        .log-toggle-btn {
+            padding: 6px 12px;
+            border: 1px solid #ddd;
+            background-color: #f5f5f5;
+            color: #666;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-size: 13px;
+        }
+        
+        .log-toggle-btn.active {
+            background-color: #2563eb;
+            color: white;
+            border-color: #2563eb;
+        }
+        
+        .log-toggle-btn:hover:not(.active) {
+            background-color: #e5e7eb;
+        }
+        
+        .basic-log-container {
+            display: none;
+            padding: 20px;
+            background-color: #f8f9fa;
+            border-radius: 6px;
+            font-family: 'Consolas', 'Monaco', monospace;
+        }
+        
+        .basic-log-container.active {
+            display: block;
+        }
+        
+        .basic-log-item {
+            margin-bottom: 10px;
+            padding: 12px;
+            background-color: white;
+            border-radius: 4px;
+            border-left: 4px solid #ddd;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+            transition: all 0.3s ease;
+            opacity: 0.5;
+        }
+        
+        .basic-log-item.active {
+            border-left-color: #2563eb;
+            opacity: 1;
+        }
+        
+        .basic-log-item.completed {
+            border-left-color: #10b981;
+            opacity: 1;
+        }
+        
+        .basic-log-label {
+            font-weight: 600;
+            color: #999;
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            transition: color 0.3s ease;
+        }
+        
+        .basic-log-item.active .basic-log-label,
+        .basic-log-item.completed .basic-log-label {
+            color: #555;
+        }
+        
+        .basic-log-value {
+            margin-top: 4px;
+            color: #ccc;
+            font-size: 14px;
+            transition: color 0.3s ease;
+        }
+        
+        .basic-log-item.active .basic-log-value,
+        .basic-log-item.completed .basic-log-value {
+            color: #333;
+        }
+        
+        .basic-log-progress {
+            margin-top: 15px;
+            padding: 10px;
+            background-color: #e5e7eb;
+            border-radius: 4px;
+            text-align: center;
+            font-size: 13px;
+            color: #6b7280;
+        }
+        
+        .basic-log-progress.active {
+            background-color: #dbeafe;
+            color: #1e40af;
+        }
+        
+        #progressLog.hidden {
+            display: none;
         }
         
         .log-entry {
@@ -255,6 +365,27 @@
                         <small style="color: #666; display: block; margin-top: 5px;">Leave empty to use API key from .env file (GEMINI_API_KEY, OPENAI_API_KEY, etc.)</small>
                     </div>
                     
+                    <div class="form-group" style="margin-top: 20px;">
+                        <label for="use_custom_llm">
+                            <input type="checkbox" id="use_custom_llm" name="use_custom_llm" style="margin-right: 8px;" onchange="toggleCustomLLM()">
+                            Use Custom LLM Provider
+                        </label>
+                        <small style="color: #666; display: block; margin-top: 5px;">Configure your own LLM endpoint (OpenAI-compatible APIs)</small>
+                    </div>
+                    
+                    <div id="customLLMSettings" style="display: none; margin-top: 15px; padding: 15px; background-color: #f8f9fa; border-radius: 6px;">
+                        <div class="form-group">
+                            <label for="custom_llm_base_url">Custom LLM Base URL</label>
+                            <input type="text" id="custom_llm_base_url" name="custom_llm_base_url" placeholder="https://your-llm-endpoint.com/v1">
+                            <small style="color: #666; display: block; margin-top: 5px;">OpenAI-compatible API endpoint</small>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="custom_llm_api_key">Custom LLM API Key</label>
+                            <input type="text" id="custom_llm_api_key" name="custom_llm_api_key" placeholder="Your custom LLM API key">
+                        </div>
+                    </div>
+                    
                     <div class="form-group">
                         <label for="extraction_model">🔍 Extraction Model (Content Processing)</label>
                         <select id="extraction_model" name="extraction_model" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 16px;" onchange="handleModelChange()">
@@ -320,6 +451,106 @@
                         <button type="button" class="btn" style="margin-top: 10px; padding: 8px 16px; font-size: 14px;" onclick="refreshKnowledgeBases()">🔄 Refresh List</button>
                         <small style="color: #666; display: block; margin-top: 5px;">Select the knowledge base where content will be stored</small>
                     </div>
+                    
+                    <div style="margin-top: 30px; padding-top: 20px; border-top: 2px solid #e5e7eb;">
+                        <h3 style="font-size: 18px; margin-bottom: 15px; color: #2563eb;">🔀 RAG Optimization Mode</h3>
+                        
+                        <div class="form-group">
+                            <label for="enable_dual_mode">
+                                <input type="checkbox" id="enable_dual_mode" name="enable_dual_mode" checked style="margin-right: 8px;">
+                                Enable Dual-Mode RAG Optimization
+                            </label>
+                            <small style="color: #666; display: block; margin-top: 5px;">Automatically select between Full Doc and Paragraph modes based on content</small>
+                        </div>
+                        
+                        <div id="dualModeSettings" style="margin-top: 15px;">
+                            <div class="form-group">
+                                <label for="dual_mode_type">Mode Selection Strategy</label>
+                                <select id="dual_mode_type" name="dual_mode_type" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 16px;" onchange="handleDualModeChange()">
+                                    <option value="threshold">📏 Word Count Threshold (Fast & Simple)</option>
+                                    <option value="intelligent">🤖 AI-Powered Analysis (Smart & Accurate)</option>
+                                    <option value="manual">✋ Manual Selection (Force specific mode)</option>
+                                </select>
+                            </div>
+                            
+                            <div id="thresholdSettings" style="margin-top: 15px;">
+                                <div class="form-group">
+                                    <label for="word_threshold">Word Count Threshold</label>
+                                    <input type="number" id="word_threshold" name="word_threshold" value="4000" min="500" max="20000" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 16px;">
+                                    <small style="color: #666; display: block; margin-top: 5px;">
+                                        • ≤ 4000 words → <strong>Full Doc Mode</strong> (returns entire document)<br>
+                                        • > 4000 words → <strong>Paragraph Mode</strong> (returns specific chunks)
+                                    </small>
+                                </div>
+                            </div>
+                            
+                            <div id="intelligentSettings" style="display: none; margin-top: 15px;">
+                                <div class="form-group">
+                                    <label for="intelligent_analysis_model">📊 Content Analysis Model</label>
+                                    <select id="intelligent_analysis_model" name="intelligent_analysis_model" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 16px;" onchange="handleAnalysisModelChange()">
+                                        <option value="gemini/gemini-1.5-flash">Gemini 1.5 Flash (Recommended - Fast)</option>
+                                        <option value="gemini/gemini-2.0-flash-exp">Gemini 2.0 Flash Exp</option>
+                                        <option value="openai/gpt-4o-mini">OpenAI GPT-4o Mini</option>
+                                        <option value="openai/gpt-3.5-turbo">OpenAI GPT-3.5 Turbo</option>
+                                        <option value="custom_analysis">➕ Custom Model...</option>
+                                    </select>
+                                    <input type="text" id="customAnalysisModel" name="customAnalysisModel" placeholder="e.g., mistral-7b, llama-2-13b, your-model-name" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 16px; margin-top: 10px; display: none;">
+                                    <small style="color: #666; display: block; margin-top: 5px;">Model used to analyze content structure and value</small>
+                                </div>
+                                
+                                <div style="background-color: #f0f9ff; padding: 15px; border-radius: 6px; border-left: 4px solid #0ea5e9; margin-top: 15px;">
+                                    <h4 style="margin: 0 0 8px 0; color: #0369a1; font-size: 14px;">🤖 How AI Analysis Works:</h4>
+                                    <ul style="margin: 0; padding-left: 20px; font-size: 13px; color: #0c4a6e;">
+                                        <li><strong>Content Value Assessment:</strong> Skips low-value pages (login, navigation, ads)</li>
+                                        <li><strong>Structure Analysis:</strong> Single-topic → Full Doc | Multi-topic → Paragraph</li>
+                                        <li><strong>Smart Filtering:</strong> Only processes high-value content for your RAG system</li>
+                                    </ul>
+                                </div>
+                            </div>
+                            
+                            <div id="manualSettings" style="display: none; margin-top: 15px;">
+                                <div class="form-group">
+                                    <label for="manual_mode">Select Processing Mode</label>
+                                    <select id="manual_mode" name="manual_mode" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 16px;">
+                                        <option value="full_doc">📄 Full Doc Mode - Return entire documents</option>
+                                        <option value="paragraph">📚 Paragraph Mode - Return specific chunks</option>
+                                    </select>
+                                    <small style="color: #666; display: block; margin-top: 5px;">Force all content to use this specific mode</small>
+                                </div>
+                                
+                                <div style="background-color: #fff4e5; padding: 15px; border-radius: 6px; border-left: 4px solid #fb923c; margin-top: 15px;">
+                                    <h4 style="margin: 0 0 8px 0; color: #c2410c; font-size: 14px;">⚠️ Manual Mode Notes:</h4>
+                                    <ul style="margin: 0; padding-left: 20px; font-size: 13px; color: #7c2d12;">
+                                        <li>Overrides all automatic mode selection</li>
+                                        <li>Use with caution - may not be optimal for all content</li>
+                                        <li>Best for testing or when you know content structure</li>
+                                    </ul>
+                                </div>
+                            </div>
+                            
+                            <div style="background-color: #f8f9fa; padding: 15px; border-radius: 6px; margin-top: 15px;">
+                                <h4 style="margin: 0 0 8px 0; color: #6b7280; font-size: 13px;">📚 RAG Mode Differences:</h4>
+                                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; font-size: 12px;">
+                                    <div>
+                                        <strong style="color: #2563eb;">Full Doc Mode:</strong>
+                                        <ul style="margin: 5px 0 0 0; padding-left: 20px; color: #6b7280;">
+                                            <li>Best for: Tutorials, API docs, profiles</li>
+                                            <li>Returns: Entire document</li>
+                                            <li>When: Any chunk matches query</li>
+                                        </ul>
+                                    </div>
+                                    <div>
+                                        <strong style="color: #7c3aed;">Paragraph Mode:</strong>
+                                        <ul style="margin: 5px 0 0 0; padding-left: 20px; color: #6b7280;">
+                                            <li>Best for: Long docs, mixed content</li>
+                                            <li>Returns: Specific chunks only</li>
+                                            <li>When: Precise matches needed</li>
+                                        </ul>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
                 
                 <button type="submit" class="btn" id="startBtn">
@@ -337,8 +568,33 @@
         </div>
         
         <div class="progress-container">
-            <div class="progress-title">📋 Progress Log</div>
-            <div id="progressLog">
+            <div class="progress-title">
+                <span>📋 Progress Log</span>
+                <div class="log-toggle">
+                    <button class="log-toggle-btn active" id="basicViewBtn" onclick="toggleLogView('basic')">Basic View</button>
+                    <button class="log-toggle-btn" id="detailedViewBtn" onclick="toggleLogView('detailed')">Detailed View</button>
+                </div>
+            </div>
+            
+            <div id="basicLogContainer" class="basic-log-container active">
+                <div class="basic-log-item" id="currentPageItem">
+                    <div class="basic-log-label">Current Page <span id="pageCounter" style="color: #2563eb; font-weight: normal;"></span></div>
+                    <div class="basic-log-value" id="currentPageDisplay">Waiting to start...</div>
+                </div>
+                <div class="basic-log-item" id="processingModeItem">
+                    <div class="basic-log-label">Processing Mode</div>
+                    <div class="basic-log-value" id="processingModeDisplay">Pending...</div>
+                </div>
+                <div class="basic-log-item" id="knowledgeBaseItem">
+                    <div class="basic-log-label">Knowledge Base</div>
+                    <div class="basic-log-value" id="knowledgeBaseDisplay">Pending...</div>
+                </div>
+                <div class="basic-log-progress" id="progressStatus">
+                    Ready to start crawling...
+                </div>
+            </div>
+            
+            <div id="progressLog" class="hidden">
                 <div class="log-entry info">Ready to start crawling...</div>
             </div>
         </div>
@@ -347,6 +603,179 @@
     <script>
         let eventSource = null;
         let knowledgeBases = {};
+        let currentLogView = 'basic';
+        let currentPageInfo = {
+            page: 'Waiting to start...',
+            mode: 'Pending...',
+            knowledgeBase: 'Pending...'
+        };
+        let pageStage = 'idle'; // idle, page_detected, mode_detected, kb_detected
+        let pageCount = 0;
+        
+        function toggleLogView(view) {
+            currentLogView = view;
+            const basicBtn = document.getElementById('basicViewBtn');
+            const detailedBtn = document.getElementById('detailedViewBtn');
+            const basicContainer = document.getElementById('basicLogContainer');
+            const detailedLog = document.getElementById('progressLog');
+            
+            if (view === 'basic') {
+                basicBtn.classList.add('active');
+                detailedBtn.classList.remove('active');
+                basicContainer.classList.add('active');
+                detailedLog.classList.add('hidden');
+            } else {
+                basicBtn.classList.remove('active');
+                detailedBtn.classList.add('active');
+                basicContainer.classList.remove('active');
+                detailedLog.classList.remove('hidden');
+            }
+        }
+        
+        function updateBasicLogDisplay() {
+            document.getElementById('currentPageDisplay').textContent = currentPageInfo.page;
+            document.getElementById('processingModeDisplay').textContent = currentPageInfo.mode;
+            document.getElementById('knowledgeBaseDisplay').textContent = currentPageInfo.knowledgeBase;
+            
+            // Update page counter
+            if (pageCount > 0) {
+                document.getElementById('pageCounter').textContent = `(Page ${pageCount})`;
+            } else {
+                document.getElementById('pageCounter').textContent = '';
+            }
+            
+            // Update item states based on stage
+            const pageItem = document.getElementById('currentPageItem');
+            const modeItem = document.getElementById('processingModeItem');
+            const kbItem = document.getElementById('knowledgeBaseItem');
+            const progressStatus = document.getElementById('progressStatus');
+            
+            // Reset all items first
+            pageItem.className = 'basic-log-item';
+            modeItem.className = 'basic-log-item';
+            kbItem.className = 'basic-log-item';
+            
+            // Update based on current stage
+            switch(pageStage) {
+                case 'page_detected':
+                    pageItem.className = 'basic-log-item active';
+                    progressStatus.textContent = `Extracting content from this page...`;
+                    progressStatus.className = 'basic-log-progress active';
+                    break;
+                case 'mode_detected':
+                    pageItem.className = 'basic-log-item completed';
+                    modeItem.className = 'basic-log-item active';
+                    progressStatus.textContent = `Determining processing mode...`;
+                    break;
+                case 'kb_detected':
+                    pageItem.className = 'basic-log-item completed';
+                    modeItem.className = 'basic-log-item completed';
+                    kbItem.className = 'basic-log-item active';
+                    progressStatus.textContent = `Saving to knowledge base...`;
+                    break;
+                case 'completed':
+                    pageItem.className = 'basic-log-item completed';
+                    modeItem.className = 'basic-log-item completed';
+                    kbItem.className = 'basic-log-item completed';
+                    progressStatus.textContent = `Done with this page.`;
+                    progressStatus.className = 'basic-log-progress';
+                    break;
+                default:
+                    progressStatus.textContent = 'Waiting for pages to process...';
+                    progressStatus.className = 'basic-log-progress';
+            }
+        }
+        
+        function resetPageInfo() {
+            currentPageInfo = {
+                page: 'Detecting...',
+                mode: 'Pending...',
+                knowledgeBase: 'Pending...'
+            };
+            pageStage = 'idle';
+            updateBasicLogDisplay();
+        }
+        
+        function extractPageInfoFromLog(message) {
+            
+            // Detect new page and reset if needed - try multiple patterns
+            const newPageMatch = message.match(/\[\d+\/\d+\]\s*Processing:\s*(https?:\/\/[^\s]+)/i) ||
+                                message.match(/Processing:\s*(https?:\/\/[^\s]+)/i) ||
+                                message.match(/📄\s*Processing document:\s*(https?:\/\/[^\s]+)/i) ||
+                                message.match(/Extracting content from:\s*(https?:\/\/[^\s]+)/i) ||
+                                message.match(/🌐\s*Crawling:\s*(https?:\/\/[^\s]+)/i) ||
+                                message.match(/✅\s*\[Page \d+\]\s*(https?:\/\/[^\s]+)/i);
+            
+            if (newPageMatch) {
+                // Check if this is a new page (different from current)
+                const newUrl = newPageMatch[1];
+                if (pageStage === 'idle' || currentPageInfo.page !== newUrl) {
+                    // Reset for new page
+                    pageCount++;
+                    resetPageInfo();
+                    currentPageInfo.page = newUrl;
+                    pageStage = 'page_detected';
+                    updateBasicLogDisplay();
+                }
+            }
+            
+            // Extract mode information (only if we've detected a page)
+            if (pageStage !== 'idle' && pageStage !== 'completed') {
+                if (message.includes('📋 Using processing mode: full_doc') || message.includes('📄 Selected mode: full_doc')) {
+                    currentPageInfo.mode = '📄 Full Doc Mode';
+                    if (pageStage === 'page_detected') pageStage = 'mode_detected';
+                } else if (message.includes('📋 Using processing mode: paragraph') || message.includes('📄 Selected mode: paragraph')) {
+                    currentPageInfo.mode = '📚 Paragraph Mode';
+                    if (pageStage === 'page_detected') pageStage = 'mode_detected';
+                } else if (message.includes('✋ Manual mode: FULL DOC')) {
+                    currentPageInfo.mode = '📄 Full Doc (Manual)';
+                    if (pageStage === 'page_detected') pageStage = 'mode_detected';
+                } else if (message.includes('✋ Manual mode: PARAGRAPH')) {
+                    currentPageInfo.mode = '📚 Paragraph (Manual)';
+                    if (pageStage === 'page_detected') pageStage = 'mode_detected';
+                } else if (message.includes('🔀 Dual-mode enabled')) {
+                    // Extract the specific type
+                    if (message.includes('WORD count threshold')) {
+                        currentPageInfo.mode = '📏 Word Threshold Mode';
+                    } else if (message.includes('Intelligent mode enabled')) {
+                        currentPageInfo.mode = '🤖 AI Analysis Mode';
+                    }
+                    if (pageStage === 'page_detected') pageStage = 'mode_detected';
+                }
+            }
+            
+            // Extract knowledge base information
+            if (pageStage === 'page_detected' || pageStage === 'mode_detected' || pageStage === 'kb_detected') {
+                // Check for category/knowledge base info
+                if (message.includes('📂 Category:')) {
+                    const kbMatch = message.match(/📂\s*Category:\s*([^\n]+)/i);
+                    if (kbMatch) {
+                        currentPageInfo.knowledgeBase = kbMatch[1].trim();
+                        if (pageStage !== 'kb_detected') pageStage = 'kb_detected';
+                    }
+                } else if (message.includes('Found existing knowledge base:') || message.includes('Created new knowledge base:')) {
+                    const kbMatch = message.match(/(?:Found existing|Created new) knowledge base:\s*([^(]+)/i);
+                    if (kbMatch) {
+                        currentPageInfo.knowledgeBase = kbMatch[1].trim();
+                        if (pageStage !== 'kb_detected') pageStage = 'kb_detected';
+                    }
+                }
+                
+                // Check if document was successfully pushed
+                if (message.includes('✅ Successfully pushed new document')) {
+                    pageStage = 'completed';
+                    // Auto-reset after 2 seconds
+                    setTimeout(() => {
+                        if (pageStage === 'completed') {
+                            resetPageInfo();
+                        }
+                    }, 2000);
+                }
+            }
+            
+            // Update display
+            updateBasicLogDisplay();
+        }
         
         function toggleAdvanced() {
             const settings = document.getElementById('advancedSettings');
@@ -354,6 +783,63 @@
             settings.classList.toggle('show');
             arrow.textContent = settings.classList.contains('show') ? '▼' : '▶';
         }
+        
+        function handleDualModeChange() {
+            const dualModeType = document.getElementById('dual_mode_type').value;
+            const thresholdSettings = document.getElementById('thresholdSettings');
+            const intelligentSettings = document.getElementById('intelligentSettings');
+            const manualSettings = document.getElementById('manualSettings');
+            
+            // Hide all settings first
+            thresholdSettings.style.display = 'none';
+            intelligentSettings.style.display = 'none';
+            manualSettings.style.display = 'none';
+            
+            // Show relevant settings
+            if (dualModeType === 'intelligent') {
+                intelligentSettings.style.display = 'block';
+            } else if (dualModeType === 'manual') {
+                manualSettings.style.display = 'block';
+            } else {
+                thresholdSettings.style.display = 'block';
+            }
+        }
+        
+        function toggleCustomLLM() {
+            const customLLMSettings = document.getElementById('customLLMSettings');
+            const useCustomLLM = document.getElementById('use_custom_llm').checked;
+            customLLMSettings.style.display = useCustomLLM ? 'block' : 'none';
+            
+            // Update analysis model note if needed
+            handleAnalysisModelChange();
+        }
+        
+        function handleAnalysisModelChange() {
+            const analysisSelect = document.getElementById('intelligent_analysis_model');
+            const customAnalysisInput = document.getElementById('customAnalysisModel');
+            
+            if (analysisSelect.value === 'custom_analysis') {
+                customAnalysisInput.style.display = 'block';
+                customAnalysisInput.required = true;
+            } else {
+                customAnalysisInput.style.display = 'none';
+                customAnalysisInput.required = false;
+                customAnalysisInput.value = '';
+            }
+        }
+        
+        // Handle dual mode checkbox (after DOM loads)
+        document.addEventListener('DOMContentLoaded', function() {
+            const dualModeCheckbox = document.getElementById('enable_dual_mode');
+            if (dualModeCheckbox) {
+                dualModeCheckbox.addEventListener('change', function(e) {
+                    const dualModeSettings = document.getElementById('dualModeSettings');
+                    if (dualModeSettings) {
+                        dualModeSettings.style.display = e.target.checked ? 'block' : 'none';
+                    }
+                });
+            }
+        });
         
         function handleKnowledgeBaseModeChange() {
             const mode = document.getElementById('knowledge_base_mode').value;
@@ -466,6 +952,40 @@
             entry.textContent = message;
             logContainer.appendChild(entry);
             logContainer.scrollTop = logContainer.scrollHeight;
+            
+            // Extract information for basic view
+            extractPageInfoFromLog(message);
+            
+            // Simple fallback patterns for immediate display
+            if (currentLogView === 'basic') {
+                // URL detection
+                if (message.includes('Processing:') && message.includes('http')) {
+                    const urlMatch = message.match(/(https?:\/\/[^\s]+)/);
+                    if (urlMatch) {
+                        document.getElementById('currentPageDisplay').textContent = urlMatch[1];
+                        document.getElementById('currentPageItem').className = 'basic-log-item active';
+                    }
+                }
+                
+                // Mode detection
+                if (message.includes('Selected mode:') || message.includes('Using processing mode:')) {
+                    document.getElementById('processingModeItem').className = 'basic-log-item active';
+                    if (message.includes('full_doc')) {
+                        document.getElementById('processingModeDisplay').textContent = '📄 Full Doc Mode';
+                    } else if (message.includes('paragraph')) {
+                        document.getElementById('processingModeDisplay').textContent = '📚 Paragraph Mode';
+                    }
+                }
+                
+                // Knowledge base detection
+                if (message.includes('Category:') || message.includes('knowledge base')) {
+                    document.getElementById('knowledgeBaseItem').className = 'basic-log-item active';
+                    const catMatch = message.match(/Category:\s*([^\n]+)/);
+                    if (catMatch) {
+                        document.getElementById('knowledgeBaseDisplay').textContent = catMatch[1].trim();
+                    }
+                }
+            }
         }
         
         function updateStatus(status) {
@@ -586,6 +1106,24 @@
                 return;
             }
             
+            // Get dual-mode settings
+            const enableDualMode = document.getElementById('enable_dual_mode').checked;
+            const dualModeType = document.getElementById('dual_mode_type').value;
+            const wordThreshold = document.getElementById('word_threshold').value;
+            const useIntelligentMode = dualModeType === 'intelligent';
+            const analysisSelect = document.getElementById('intelligent_analysis_model');
+            const customAnalysis = document.getElementById('customAnalysisModel').value;
+            
+            let intelligentAnalysisModel = analysisSelect.value === 'custom_analysis' ? 
+                customAnalysis : analysisSelect.value;
+            
+            const manualMode = dualModeType === 'manual' ? document.getElementById('manual_mode').value : null;
+            
+            // Get custom LLM settings
+            const useCustomLLM = document.getElementById('use_custom_llm').checked;
+            const customLLMBaseUrl = useCustomLLM ? document.getElementById('custom_llm_base_url').value : null;
+            const customLLMApiKey = useCustomLLM ? document.getElementById('custom_llm_api_key').value : null;
+            
             const formData = {
                 url: document.getElementById('url').value,
                 max_pages: document.getElementById('max_pages').value,
@@ -596,11 +1134,31 @@
                 extraction_model: selectedExtractionModel,
                 naming_model: selectedNamingModel,
                 knowledge_base_mode: knowledgeBaseMode,
-                selected_knowledge_base: selectedKnowledgeBase
+                selected_knowledge_base: selectedKnowledgeBase,
+                enable_dual_mode: enableDualMode,
+                dual_mode_type: dualModeType,
+                word_threshold: wordThreshold,
+                use_intelligent_mode: useIntelligentMode,
+                intelligent_analysis_model: intelligentAnalysisModel,
+                manual_mode: manualMode,
+                custom_llm_base_url: customLLMBaseUrl,
+                custom_llm_api_key: customLLMApiKey
             };
             
-            // Clear previous logs
+            // Clear previous logs and reset basic view
             document.getElementById('progressLog').innerHTML = '';
+            pageCount = 0;
+            pageStage = 'idle';
+            currentPageInfo = {
+                page: 'Waiting for first page...',
+                mode: 'Pending...',
+                knowledgeBase: 'Pending...'
+            };
+            updateBasicLogDisplay();
+            
+            // Update progress status
+            document.getElementById('progressStatus').textContent = 'Starting crawl...';
+            document.getElementById('progressStatus').className = 'basic-log-progress active';
             
             // Disable submit button
             document.getElementById('startBtn').disabled = true;

@@ -15,9 +15,16 @@ An advanced web crawling system that automatically extracts, categorizes, and or
   - **Automatic Mode**: Intelligent categorization into appropriate knowledge bases
   - **Manual Mode**: Direct all content to a selected knowledge base
   
+- **Intelligent Dual-Mode RAG System**:
+  - **Full Doc Mode**: Returns entire documents for single-topic content
+  - **Paragraph Mode**: Returns specific chunks for multi-topic content
+  - **Smart Mode Selection**: AI analyzes content structure automatically
+  - **Low-Value Filtering**: Skips login pages, navigation, ads
+
 - **Flexible Chunking Strategies**:
   - Parent-child hierarchical chunking for comprehensive organization
   - Flat chunking for simpler content structure
+  - Automatic mode selection based on content length or AI analysis
 
 - **Web Interface**: User-friendly UI for easy crawling configuration
 
@@ -119,26 +126,48 @@ workflow = CrawlWorkflow(
 
 ## 🔧 Advanced Configuration
 
+### Intelligent RAG Mode Selection
+
+1. **Word Count Based** (Default):
+```python
+workflow = CrawlWorkflow(
+    enable_dual_mode=True,
+    word_threshold=4000  # Switch at 4000 words
+)
+```
+
+2. **AI-Powered Intelligence**:
+```python
+workflow = CrawlWorkflow(
+    enable_dual_mode=True,
+    use_intelligent_mode=True  # AI analyzes content
+)
+```
+- Automatically filters low-value pages
+- Selects mode based on content structure
+- See [INTELLIGENT_DUAL_MODE_RAG_TUTORIAL.md](INTELLIGENT_DUAL_MODE_RAG_TUTORIAL.md) for complete tutorial
+
 ### Chunking Strategies
 
-1. **Parent-Child Hierarchical** (Default):
+1. **Parent-Child Hierarchical** (Default for long content):
 ```python
 workflow = CrawlWorkflow(use_parent_child=True)
 ```
 - Creates overview parent chunks with detailed child chunks
 - Optimal for complex documentation
 
-2. **Flat Chunking**:
+2. **Full Document with Sections** (For short content):
 ```python
-workflow = CrawlWorkflow(use_parent_child=False)
+# Automatically selected for content under threshold
 ```
-- Creates self-contained sections
-- Better for simpler content
+- Stores complete documents with logical sections
+- Better for tutorials, API docs, profiles
 
 ### Custom Extraction Prompts
 
 Place custom prompts in the `prompts/` directory:
-- `extraction_prompt_parent_child.txt` - For hierarchical chunking
+- `extraction_prompt_parent_child.txt` - For hierarchical chunking (paragraph mode)
+- `extraction_prompt_full_doc.txt` - For full document mode
 - `extraction_prompt_flexible.txt` - For flat chunking
 
 ## 📊 Workflow Process
@@ -172,14 +201,24 @@ Place custom prompts in the `prompts/` directory:
 
 ```
 Crawl4AI/
-├── app.py                 # Flask web server
-├── crawl_workflow.py      # Core crawling logic
-├── Test_dify.py          # Dify API integration
+├── app.py                         # Flask web server
+├── crawl_workflow.py              # Core crawling logic
+├── content_processor.py           # Content analysis & mode selection
+├── intelligent_content_analyzer.py # AI-powered content analysis
+├── Test_dify.py                  # Dify API integration
 ├── templates/
-│   └── index.html        # Web interface
-├── prompts/              # Extraction prompts
-├── output/               # Extracted content (JSON)
-└── docs/                 # Documentation
+│   └── index.html                # Web interface
+├── prompts/                      # Extraction prompts
+│   ├── extraction_prompt_parent_child.txt
+│   ├── extraction_prompt_full_doc.txt
+│   └── extraction_prompt_flexible.txt
+├── tests/                        # Test examples
+│   ├── example_intelligent_mode.py
+│   ├── example_dual_mode_switch.py
+│   └── test_*.py
+├── output/                       # Extracted content (JSON)
+├── TUTORIAL_INTELLIGENT_RAG.md   # Detailed tutorial
+└── QUICKSTART_INTELLIGENT_RAG.md # Quick start guide
 ```
 
 ## 🤝 Contributing
@@ -224,9 +263,27 @@ Enable detailed logging:
 workflow = CrawlWorkflow(debug=True)
 ```
 
+## 📚 Documentation
+
+### Quick Start
+- [QUICKSTART_INTELLIGENT_RAG.md](QUICKSTART_INTELLIGENT_RAG.md) - Get started in 5 minutes
+
+### Complete Guides
+- [INTELLIGENT_DUAL_MODE_RAG_TUTORIAL.md](INTELLIGENT_DUAL_MODE_RAG_TUTORIAL.md) - Comprehensive tutorial on dual-mode RAG
+- [UI_INTELLIGENT_MODE_GUIDE.md](UI_INTELLIGENT_MODE_GUIDE.md) - Complete UI guide with all features
+- [README_UI.md](README_UI.md) - Basic UI setup and usage
+
+### Advanced Topics
+- [CUSTOM_ANALYSIS_MODEL_GUIDE.md](CUSTOM_ANALYSIS_MODEL_GUIDE.md) - Using custom LLMs for analysis
+- [SIMPLE_CUSTOM_MODEL_GUIDE.md](SIMPLE_CUSTOM_MODEL_GUIDE.md) - Quick custom model setup
+- [IMPLEMENTATION_SUMMARY.md](IMPLEMENTATION_SUMMARY.md) - Technical implementation details
+
+### Legacy Documentation
+- [README_parent_child_chunking.md](README_parent_child_chunking.md) - Parent-child chunking details
+
 ## 📧 Support
 
 For issues and questions:
 - Open an issue on GitHub
 - Check existing issues for solutions
-- Review the documentation in `/docs`
+- Review the documentation above
