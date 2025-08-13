@@ -22,8 +22,8 @@ task_lock = threading.Lock()
 cancel_event = threading.Event()
 current_loop = None
 
-def run_async_crawl(url, max_pages, max_depth, api_key, base_url, llm_api_key, extraction_model, naming_model=None, knowledge_base_mode='automatic', selected_knowledge_base=None):
-    """Run the async crawl in a separate thread with dual-model support."""
+def run_async_crawl(url, max_pages, max_depth, api_key, base_url, llm_api_key, extraction_model, naming_model=None, knowledge_base_mode='automatic', selected_knowledge_base=None, enable_dual_mode=True, dual_mode_type='threshold', word_threshold=4000, use_intelligent_mode=False, intelligent_analysis_model='gemini/gemini-1.5-flash', manual_mode=None, custom_llm_base_url=None, custom_llm_api_key=None):
+    """Run the async crawl in a separate thread with dual-model and dual-mode support."""
     global current_task, current_loop
     
     # Create new event loop for this thread
@@ -54,7 +54,7 @@ def run_async_crawl(url, max_pages, max_depth, api_key, base_url, llm_api_key, e
         
         progress_queue.put({
             'type': 'log',
-            'message': f'🧠 Dual-Model Configuration:',
+            'message': f'🧠 Model Configuration:',
             'timestamp': datetime.now().isoformat()
         })
         progress_queue.put({
@@ -68,14 +68,77 @@ def run_async_crawl(url, max_pages, max_depth, api_key, base_url, llm_api_key, e
             'timestamp': datetime.now().isoformat()
         })
         
-        # Create workflow instance with dual-model support
+        # Log dual-mode configuration
+        if enable_dual_mode:
+            progress_queue.put({
+                'type': 'log',
+                'message': f'🔀 Dual-Mode RAG: ENABLED',
+                'timestamp': datetime.now().isoformat()
+            })
+            if manual_mode:
+                progress_queue.put({
+                    'type': 'log',
+                    'message': f'  ✋ Manual mode: {manual_mode.upper()}',
+                    'timestamp': datetime.now().isoformat()
+                })
+            elif use_intelligent_mode:
+                progress_queue.put({
+                    'type': 'log',
+                    'message': f'  🤖 Using AI-powered content analysis',
+                    'timestamp': datetime.now().isoformat()
+                })
+                # Check if using custom analysis model
+                is_custom_analysis = not any(intelligent_analysis_model.startswith(p) for p in ['gemini/', 'openai/', 'anthropic/'])
+                
+                if custom_llm_base_url and is_custom_analysis:
+                    progress_queue.put({
+                        'type': 'log',
+                        'message': f'  📊 Analysis model: {intelligent_analysis_model} (via custom LLM)',
+                        'timestamp': datetime.now().isoformat()
+                    })
+                else:
+                    progress_queue.put({
+                        'type': 'log',
+                        'message': f'  📊 Analysis model: {intelligent_analysis_model}',
+                        'timestamp': datetime.now().isoformat()
+                    })
+            else:
+                progress_queue.put({
+                    'type': 'log',
+                    'message': f'  📏 Using word count threshold: {word_threshold} words',
+                    'timestamp': datetime.now().isoformat()
+                })
+        else:
+            progress_queue.put({
+                'type': 'log',
+                'message': f'📄 Single mode: Using parent-child chunking',
+                'timestamp': datetime.now().isoformat()
+            })
+        
+        # Log custom LLM if provided
+        if custom_llm_base_url:
+            progress_queue.put({
+                'type': 'log',
+                'message': f'🔧 Custom LLM: {custom_llm_base_url}',
+                'timestamp': datetime.now().isoformat()
+            })
+        
+        # Create workflow instance with dual-model and dual-mode support
         workflow = CrawlWorkflow(
             dify_base_url=base_url,
             dify_api_key=api_key,
             gemini_api_key=api_key_to_use,
-            naming_model=naming_model,  # Add naming model parameter
+            naming_model=naming_model,
             knowledge_base_mode=knowledge_base_mode,
-            selected_knowledge_base=selected_knowledge_base
+            selected_knowledge_base=selected_knowledge_base,
+            enable_dual_mode=enable_dual_mode,
+            word_threshold=word_threshold,
+            use_word_threshold=True,  # Always use word threshold in UI for simplicity
+            use_intelligent_mode=use_intelligent_mode,
+            intelligent_analysis_model=intelligent_analysis_model,
+            manual_mode=manual_mode,
+            custom_llm_base_url=custom_llm_base_url,
+            custom_llm_api_key=custom_llm_api_key
         )
         
         # Monkey patch print to capture output
@@ -121,11 +184,12 @@ def run_async_crawl(url, max_pages, max_depth, api_key, base_url, llm_api_key, e
         # Run the crawl
         loop.run_until_complete(crawl_with_cancel_check())
         
-        progress_queue.put({
-            'type': 'complete',
-            'message': 'Crawl completed successfully!',
-            'timestamp': datetime.now().isoformat()
-        })
+        if not cancel_event.is_set():
+            progress_queue.put({
+                'type': 'complete',
+                'message': 'Crawl completed successfully!',
+                'timestamp': datetime.now().isoformat()
+            })
         
     except Exception as e:
         progress_queue.put({
@@ -169,6 +233,18 @@ def start_crawl():
     knowledge_base_mode = data.get('knowledge_base_mode', 'automatic')
     selected_knowledge_base = data.get('selected_knowledge_base', None)
     
+    # Dual-mode RAG parameters
+    enable_dual_mode = data.get('enable_dual_mode', True)
+    dual_mode_type = data.get('dual_mode_type', 'threshold')
+    word_threshold = int(data.get('word_threshold', 4000))
+    use_intelligent_mode = data.get('use_intelligent_mode', False)
+    intelligent_analysis_model = data.get('intelligent_analysis_model', 'gemini/gemini-1.5-flash')
+    manual_mode = data.get('manual_mode', None)  # 'full_doc' or 'paragraph'
+    
+    # Custom LLM parameters
+    custom_llm_base_url = data.get('custom_llm_base_url', None)
+    custom_llm_api_key = data.get('custom_llm_api_key', None)
+    
     if not url:
         return jsonify({
             'status': 'error',
@@ -201,7 +277,7 @@ def start_crawl():
     with task_lock:
         current_task = threading.Thread(
             target=run_async_crawl,
-            args=(url, max_pages, max_depth, api_key, base_url, llm_api_key, extraction_model, naming_model, knowledge_base_mode, selected_knowledge_base)
+            args=(url, max_pages, max_depth, api_key, base_url, llm_api_key, extraction_model, naming_model, knowledge_base_mode, selected_knowledge_base, enable_dual_mode, dual_mode_type, word_threshold, use_intelligent_mode, intelligent_analysis_model, manual_mode, custom_llm_base_url, custom_llm_api_key)
         )
         current_task.start()
     
@@ -262,7 +338,7 @@ def get_knowledge_bases():
         api_key = request.args.get('api_key', 'dataset-VoYPMEaQ8L1udk2F6oek99XK')
         
         # Import DifyAPI
-        from Test_dify import DifyAPI
+        from tests.Test_dify import DifyAPI
         dify_api = DifyAPI(base_url=base_url, api_key=api_key)
         
         # Get knowledge bases

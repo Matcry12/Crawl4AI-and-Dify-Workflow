@@ -17,36 +17,59 @@ import re
 # Import the DifyAPI class
 import sys
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from Test_dify import DifyAPI
+from tests.Test_dify import DifyAPI
+from content_processor import ContentProcessor, ProcessingMode
 
 
 class CrawlWorkflow:
-    def __init__(self, dify_base_url="http://localhost:8088", dify_api_key=None, gemini_api_key=None, use_parent_child=True, naming_model=None, knowledge_base_mode='automatic', selected_knowledge_base=None):
+    def __init__(self, dify_base_url="http://localhost:8088", dify_api_key=None, gemini_api_key=None, use_parent_child=True, naming_model=None, knowledge_base_mode='automatic', selected_knowledge_base=None, enable_dual_mode=True, word_threshold=4000, token_threshold=8000, use_word_threshold=True, use_intelligent_mode=False, intelligent_analysis_model="gemini/gemini-1.5-flash", manual_mode=None, custom_llm_base_url=None, custom_llm_api_key=None):
         """Initialize the crawl workflow with API configurations.
         
         Args:
             dify_base_url: Base URL for Dify API
             dify_api_key: API key for Dify
             gemini_api_key: API key for Gemini (used for both naming and extraction by default)
-            use_parent_child: Enable parent-child chunking for extraction
+            use_parent_child: Enable parent-child chunking for extraction (deprecated when dual mode is enabled)
             naming_model: Custom model for knowledge base naming (e.g., "gemini/gemini-1.5-flash" for fast naming)
                          If None, uses the same model as extraction
             knowledge_base_mode: 'automatic' or 'manual' - how to select knowledge base
             selected_knowledge_base: ID of the manually selected knowledge base (when mode is 'manual')
+            enable_dual_mode: Enable automatic selection between paragraph and full doc modes
+            word_threshold: Word count threshold for mode selection (default 4000)
+            token_threshold: Token count threshold for mode selection (default 8000)
+            use_word_threshold: If True, use word count; if False, use token count
+            use_intelligent_mode: If True, use LLM to analyze content structure and value
+            intelligent_analysis_model: Model to use for intelligent content analysis
         """
         self.dify_api = DifyAPI(base_url=dify_base_url, api_key=dify_api_key)
         self.gemini_api_key = gemini_api_key or os.getenv('GEMINI_API_KEY')
         self.naming_model = naming_model or "gemini/gemini-1.5-flash"  # Default to fast model for naming
         self.knowledge_bases = {}  # Cache of existing knowledge bases
-        self.tags_cache = {}  # Cache of existing tags
         self.document_cache = {}  # Cache of existing documents by knowledge base {kb_id: {doc_name: doc_id}}
         self._initialized = False  # Track initialization state
-        self.use_parent_child = use_parent_child  # Enable parent-child chunking
+        self.use_parent_child = use_parent_child  # Enable parent-child chunking (deprecated with dual mode)
         self.knowledge_base_mode = knowledge_base_mode  # 'automatic' or 'manual'
         self.selected_knowledge_base = selected_knowledge_base  # ID for manual mode
+        self.enable_dual_mode = enable_dual_mode  # Enable automatic mode selection
+        self.use_intelligent_mode = use_intelligent_mode  # Enable intelligent content analysis
+        self.manual_mode = manual_mode  # Manual selection: 'full_doc' or 'paragraph'
+        self.custom_llm_base_url = custom_llm_base_url  # Custom LLM endpoint
+        self.custom_llm_api_key = custom_llm_api_key  # Custom LLM API key
+        
+        # Initialize content processor for dual-mode handling
+        self.content_processor = ContentProcessor(
+            word_threshold=word_threshold,
+            token_threshold=token_threshold,
+            use_word_threshold=use_word_threshold,
+            use_intelligent_mode=use_intelligent_mode,
+            llm_api_key=gemini_api_key if use_intelligent_mode else None,
+            analysis_model=intelligent_analysis_model,
+            custom_llm_base_url=custom_llm_base_url if use_intelligent_mode else None,
+            custom_llm_api_key=custom_llm_api_key if use_intelligent_mode else None
+        )
         
     async def initialize(self):
-        """Initialize workflow by fetching existing knowledge bases and tags."""
+        """Initialize workflow by fetching existing knowledge bases."""
         try:
             # Get existing knowledge bases
             response = self.dify_api.get_knowledge_base_list()
@@ -85,36 +108,6 @@ class CrawlWorkflow:
             else:
                 print(f"Failed to get knowledge bases: {response.status_code} - {response.text}")
             
-            # Get existing tags
-            response = self.dify_api.get_knowledge_base_type_tags()
-            if response.status_code == 200:
-                tags_data = response.json()
-                print(f"Debug: Tags response: {tags_data}")
-                
-                # Handle different possible response structures for tags
-                tag_list = []
-                if isinstance(tags_data, dict):
-                    if 'data' in tags_data:
-                        tag_list = tags_data['data']
-                    elif 'tags' in tags_data:
-                        tag_list = tags_data['tags']
-                elif isinstance(tags_data, list):
-                    tag_list = tags_data
-                
-                for tag in tag_list:
-                    try:
-                        if isinstance(tag, dict):
-                            tag_name = tag.get('name') or tag.get('title')
-                            tag_id = tag.get('id') or tag.get('tag_id') or tag.get('uuid')
-                            
-                            if tag_name and tag_id:
-                                self.tags_cache[tag_name] = tag_id
-                                print(f"  ✅ Found existing tag: {tag_name} (ID: {tag_id})")
-                    except Exception as tag_error:
-                        print(f"  ⚠️  Error processing tag entry: {tag_error}")
-                        continue
-            else:
-                print(f"Failed to get tags: {response.status_code} - {response.text}")
                         
         except Exception as e:
             print(f"Warning: Could not initialize existing data: {e}")
@@ -122,13 +115,12 @@ class CrawlWorkflow:
             traceback.print_exc()
         finally:
             self._initialized = True
-            print(f"📊 Initialization complete: {len(self.knowledge_bases)} knowledge bases, {len(self.tags_cache)} tags cached")
+            print(f"📊 Initialization complete: {len(self.knowledge_bases)} knowledge bases cached")
     
     async def refresh_cache(self):
-        """Force refresh of knowledge bases and tags cache from API."""
+        """Force refresh of knowledge bases cache from API."""
         print("🔄 Refreshing cache from API...")
         self.knowledge_bases.clear()
-        self.tags_cache.clear()
         self.document_cache.clear()
         await self.initialize()
     
@@ -291,20 +283,19 @@ class CrawlWorkflow:
         
         return new_category
     
-    async def categorize_content(self, content: str, url: str) -> Tuple[str, List[str]]:
+    async def categorize_content(self, content: str, url: str) -> str:
         """Smart content categorization with duplicate prevention."""
         domain = urlparse(url).netloc.lower()
         
         # Step 1: Try LLM categorization
         category = None
-        tags = []
         
         try:
             # Prepare content sample for analysis (first 1000 chars for efficiency)
             content_sample = content[:1000] if len(content) > 1000 else content
             
             # Create prompt for LLM categorization
-            categorization_prompt = f"""Analyze this content and provide a GENERAL knowledge base category name and relevant tags.
+            categorization_prompt = f"""Analyze this content and provide a GENERAL knowledge base category name.
 
 URL: {url}
 Domain: {domain}
@@ -316,19 +307,17 @@ Instructions:
 3. Keep it as SHORT as possible (1-2 words max)
 4. Use snake_case only if necessary (prefer single word)
 5. DO NOT add descriptors like "_documentation", "_tutorial", "_development"
-6. Generate 3-5 relevant tags that describe the content
 
 Output format (JSON):
 {{
-  "category": "general_category_name",
-  "tags": ["tag1", "tag2", "tag3"]
+  "category": "general_category_name"
 }}
 
 Examples:
-- For ANY EOS-related content: {{"category": "eos", "tags": ["eos", "blockchain", "web3"]}}
-- For ANY Bitcoin content: {{"category": "bitcoin", "tags": ["bitcoin", "cryptocurrency", "btc"]}}
-- For ANY Ethereum content: {{"category": "ethereum", "tags": ["ethereum", "blockchain", "eth"]}}
-- For ANY React content: {{"category": "react", "tags": ["react", "javascript", "frontend"]}}
+- For ANY EOS-related content: {{"category": "eos"}}
+- For ANY Bitcoin content: {{"category": "bitcoin"}}
+- For ANY Ethereum content: {{"category": "ethereum"}}
+- For ANY React content: {{"category": "react"}}
 """
             
             # Use the configured naming model for categorization
@@ -378,9 +367,8 @@ Examples:
                 if json_match:
                     categorization_data = json.loads(json_match.group())
                     category = categorization_data.get('category', 'general')
-                    tags = categorization_data.get('tags', [])
                     
-                    if category and isinstance(tags, list):
+                    if category:
                         print(f"  🤖 Raw naming result: {category}")
                         
                         # Step 2: Preprocess/normalize the category name
@@ -397,12 +385,8 @@ Examples:
                             if keyword_matched != category:
                                 category = keyword_matched
                         
-                        # Add domain tag
-                        domain_tag = domain.replace('.', '_')
-                        if domain_tag not in tags:
-                            tags.append(domain_tag)
                         
-                        return category, tags[:5]
+                        return category
             
         except Exception as e:
             print(f"  ⚠️  LLM categorization failed: {e}, using fallback")
@@ -410,7 +394,6 @@ Examples:
         # Step 5: Fallback to enhanced rule-based categorization
         print(f"  🔧 Using enhanced rule-based fallback")
         category = "general"
-        tags = []
         
         # Prepare content sample for analysis
         content_lower = content[:500].lower() if len(content) > 500 else content.lower()
@@ -418,57 +401,40 @@ Examples:
         # Domain-based categorization with general names
         if 'eos' in domain or 'eos' in content_lower:
             category = "eos"
-            tags.extend(["eos", "blockchain"])
         elif 'bitcoin' in domain or any(term in content_lower for term in ['bitcoin', 'btc']):
             category = "bitcoin"
-            tags.extend(["bitcoin", "cryptocurrency"])
         elif 'ethereum' in domain or any(term in content_lower for term in ['ethereum', 'eth']):
             category = "ethereum"
-            tags.extend(["ethereum", "blockchain"])
         elif 'solana' in domain or 'solana' in content_lower:
             category = "solana"
-            tags.extend(["solana", "blockchain"])
         elif 'cardano' in domain or any(term in content_lower for term in ['cardano', 'ada']):
             category = "cardano"
-            tags.extend(["cardano", "blockchain"])
         elif 'polkadot' in domain or any(term in content_lower for term in ['polkadot', 'dot']):
             category = "polkadot"
-            tags.extend(["polkadot", "blockchain"])
         elif any(term in domain for term in ['news', 'blog']):
             category = "news_blogs"
-            tags.append("news")
         elif any(term in domain for term in ['github', 'gitlab']):
             category = "code_repos"
-            tags.append("code")
         else:
             # Content-based categorization
             if 'react' in content_lower:
                 category = "react"
-                tags.extend(["react", "javascript"])
             elif 'vue' in content_lower:
                 category = "vue"
-                tags.extend(["vue", "javascript"])
             elif 'angular' in content_lower:
                 category = "angular"
-                tags.extend(["angular", "javascript"])
             elif 'python' in content_lower:
                 category = "python"
-                tags.extend(["python", "programming"])
             elif any(term in content_lower for term in ['javascript', 'js']):
                 category = "javascript"
-                tags.extend(["javascript", "programming"])
             elif 'java' in content_lower and 'javascript' not in content_lower:
                 category = "java"
-                tags.extend(["java", "programming"])
             elif any(tech in content_lower for tech in ['blockchain', 'crypto', 'defi', 'web3']):
                 category = "blockchain"
-                tags.append("blockchain")
             elif any(tech in content_lower for tech in ['ai', 'machine learning', 'artificial intelligence', 'ml']):
                 category = "ai_ml"
-                tags.extend(["ai", "machine_learning"])
             elif 'api' in content_lower:
                 category = "api_docs"
-                tags.append("api")
         
         # Step 6: Apply smart matching to fallback result too
         print(f"  🔧 Fallback result: {category}")
@@ -487,12 +453,7 @@ Examples:
             if keyword_matched != category:
                 category = keyword_matched
         
-        # Add domain tag
-        domain_tag = domain.replace('.', '_')
-        if domain_tag not in tags:
-            tags.append(domain_tag)
-        
-        return category, list(set(tags))[:5]
+        return category
     
     async def ensure_knowledge_base_exists(self, category: str) -> str:
         """Create knowledge base if it doesn't exist, return its ID."""
@@ -564,77 +525,6 @@ Examples:
             print(f"❌ Failed to create knowledge base '{kb_name}': {response.status_code} - {response.text}")
             return None
     
-    async def ensure_tags_exist(self, tags: List[str]) -> List[str]:
-        """Create tags if they don't exist, return list of tag IDs."""
-        tag_ids = []
-        
-        for tag_name in tags:
-            if tag_name in self.tags_cache:
-                tag_ids.append(self.tags_cache[tag_name])
-                continue
-            
-            # Check if tag exists by refreshing from API (prevents duplicates)
-            try:
-                response = self.dify_api.get_knowledge_base_type_tags()
-                if response.status_code == 200:
-                    tags_data = response.json()
-                    
-                    # Handle different possible response structures
-                    tag_list = []
-                    if isinstance(tags_data, dict):
-                        if 'data' in tags_data:
-                            tag_list = tags_data['data']
-                        elif 'tags' in tags_data:
-                            tag_list = tags_data['tags']
-                    elif isinstance(tags_data, list):
-                        tag_list = tags_data
-                    
-                    # Check if tag already exists
-                    found_existing = False
-                    for tag in tag_list:
-                        if isinstance(tag, dict):
-                            existing_name = tag.get('name') or tag.get('title')
-                            tag_id = tag.get('id') or tag.get('tag_id') or tag.get('uuid')
-                            
-                            if existing_name == tag_name and tag_id:
-                                self.tags_cache[tag_name] = tag_id
-                                tag_ids.append(tag_id)
-                                print(f"✅ Found existing tag: {tag_name} (ID: {tag_id})")
-                                found_existing = True
-                                break
-                    
-                    if found_existing:
-                        continue
-            except Exception as e:
-                print(f"Warning: Could not refresh tags list: {e}")
-            
-            # Create new tag if not found
-            response = self.dify_api.create_knowledge_base_type_tag(tag_name)
-            if response.status_code == 200:
-                tag_data = response.json()
-                print(f"Debug: Create tag response: {tag_data}")
-                
-                # Handle different possible response structures for creation
-                tag_id = None
-                if isinstance(tag_data, dict):
-                    tag_id = tag_data.get('id') or tag_data.get('tag_id') or tag_data.get('uuid')
-                    
-                    # Some APIs return the created object nested
-                    if not tag_id and 'data' in tag_data:
-                        data = tag_data['data']
-                        if isinstance(data, dict):
-                            tag_id = data.get('id') or data.get('tag_id') or data.get('uuid')
-                
-                if tag_id:
-                    self.tags_cache[tag_name] = tag_id
-                    tag_ids.append(tag_id)
-                    print(f"✅ Created new tag: {tag_name} (ID: {tag_id})")
-                else:
-                    print(f"❌ Failed to extract tag ID from response: {tag_data}")
-            else:
-                print(f"❌ Failed to create tag '{tag_name}': {response.status_code} - {response.text}")
-        
-        return tag_ids
     
     async def load_documents_for_knowledge_base(self, kb_id: str) -> dict:
         """Load all documents for a specific knowledge base into cache."""
@@ -711,8 +601,8 @@ Examples:
         
         print(f"✅ Preloaded {total_docs} documents from {len(self.knowledge_bases)} knowledge bases")
     
-    async def push_to_knowledge_base(self, kb_id: str, content_data: dict, url: str) -> Tuple[bool, str]:
-        """Push content to specific knowledge base with duplicate detection.
+    async def push_to_knowledge_base(self, kb_id: str, content_data: dict, url: str, processing_mode: ProcessingMode = None) -> Tuple[bool, str]:
+        """Push content to specific knowledge base with duplicate detection and dual-mode support.
         Returns: (success, status_message)
         """
         # Normalize URL
@@ -733,13 +623,24 @@ Examples:
             print(f"⏭️  Document already exists: {doc_name} (ID: {existing_docs[doc_name]})")
             return True, "skipped_existing"
         
-        # Create new document with parent-child support
-        response = self.dify_api.create_document_from_text(
-            dataset_id=kb_id,
-            name=doc_name,
-            text=markdown_content,
-            use_parent_child=self.use_parent_child
-        )
+        # Determine configuration based on mode
+        if self.enable_dual_mode and processing_mode:
+            # Use dual-mode configuration
+            dify_config = self.content_processor.get_dify_configuration(processing_mode)
+            response = self.dify_api.create_document_from_text(
+                dataset_id=kb_id,
+                name=doc_name,
+                text=markdown_content,
+                custom_config=dify_config
+            )
+        else:
+            # Use legacy configuration
+            response = self.dify_api.create_document_from_text(
+                dataset_id=kb_id,
+                name=doc_name,
+                text=markdown_content,
+                use_parent_child=self.use_parent_child
+            )
         
         if response.status_code == 200:
             # Update cache with new document
@@ -765,22 +666,116 @@ Examples:
             print(f"  Error response: {response.text}")
             return False, "failed"
     
-    async def bind_tags_to_knowledge_base(self, kb_id: str, tag_ids: List[str]):
-        """Bind tags to knowledge base."""
-        if not tag_ids:
-            return
-            
-        response = self.dify_api.bind_dataset_to_tag(tag_ids, kb_id)
-        if response.status_code == 200:
-            print(f"✅ Successfully bound {len(tag_ids)} tags to knowledge base")
-        else:
-            print(f"❌ Failed to bind tags: {response.text}")
     
-    async def process_crawled_content(self, content_data: dict, url: str) -> Tuple[bool, str]:
+    def create_extraction_strategy(self, mode: ProcessingMode, extraction_model: str) -> LLMExtractionStrategy:
+        """Create an extraction strategy based on the processing mode."""
+        print(f"    🛠️  Creating strategy for mode: {mode.value if mode else 'None'}")
+        print(f"    🔍 Mode type: {type(mode)}")
+        print(f"    🔍 Mode == FULL_DOC: {mode == ProcessingMode.FULL_DOC}")
+        print(f"    🔍 Mode == PARAGRAPH: {mode == ProcessingMode.PARAGRAPH}")
+        print(f"    🔍 Mode is None: {mode is None}")
+        
+        # Get the appropriate prompt
+        if mode == ProcessingMode.FULL_DOC:
+            prompt_file = "prompts/extraction_prompt_full_doc.txt"
+            fallback_prompt = self.content_processor._get_full_doc_prompt()
+            print(f"    📝 Using full doc prompt")
+        elif mode == ProcessingMode.PARAGRAPH:
+            prompt_file = "prompts/extraction_prompt_parent_child.txt"
+            fallback_prompt = self.content_processor._get_paragraph_prompt()
+            print(f"    📝 Using paragraph (parent-child) prompt")
+        else:
+            # Default to legacy behavior
+            if self.use_parent_child:
+                prompt_file = "prompts/extraction_prompt_parent_child.txt"
+                fallback_prompt = self.content_processor._get_paragraph_prompt()
+                print(f"    📝 Using legacy parent-child prompt")
+            else:
+                prompt_file = "prompts/extraction_prompt_flexible.txt"
+                fallback_prompt = """You are a RAG content extractor optimizing for systems that return ~10 chunks. Extract comprehensive content where EACH SECTION is a COMPLETE, standalone resource.
+
+Create 4-8 logical sections with descriptive titles in brackets. Each section MUST contain ALL information needed to fully answer queries about its topic.
+
+CRITICAL RULES:
+1. Each section should be 300-1500 words and 100% self-contained
+2. NEVER split sequential steps across sections - if you see "Step 1, Step 2, Step 3", keep ALL steps together
+3. For processes (account creation, wallet setup, installations), include EVERYTHING in ONE section:
+   - ALL prerequisites
+   - ALL options/choices
+   - ALL steps from start to finish
+   - ALL troubleshooting
+   - ALL next steps
+4. Include deliberate redundancy - repeat full information wherever relevant
+
+Target 3000-6000 words total with sections separated by ###SECTION_BREAK###. Output only ONE JSON object with title, name, and description fields."""
+                print(f"    📝 Using legacy flexible prompt")
+        
+        # Try to load prompt from file
+        try:
+            with open(prompt_file, "r") as f:
+                instruction = f.read()
+            print(f"    ✅ Loaded prompt from file: {prompt_file}")
+            print(f"    📏 Prompt length: {len(instruction)} characters")
+        except FileNotFoundError:
+            instruction = fallback_prompt
+            print(f"    ⚠️  File not found: {prompt_file}, using fallback prompt")
+            print(f"    📏 Fallback prompt length: {len(instruction)} characters")
+        
+        # Debug: Check what separators are in the instruction
+        has_parent = "###PARENT_SECTION###" in instruction
+        has_child = "###CHILD_SECTION###" in instruction  
+        has_section = "###SECTION###" in instruction
+        has_break = "###SECTION_BREAK###" in instruction
+        
+        print(f"    🔍 Prompt content analysis:")
+        print(f"      Has ###PARENT_SECTION###: {has_parent}")
+        print(f"      Has ###CHILD_SECTION###: {has_child}")
+        print(f"      Has ###SECTION###: {has_section}")
+        print(f"      Has ###SECTION_BREAK###: {has_break}")
+        
+        # Create extraction strategy
+        print(f"    🤖 Model: {extraction_model}")
+        print(f"    🎯 Schema: ResultSchema")
+        print(f"    🔧 Extraction type: schema")
+        print(f"    🌡️  Temperature: 0.0")
+        print(f"    📊 Max tokens: 32000")
+        
+        strategy = LLMExtractionStrategy(
+            llm_config=LLMConfig(
+                provider=extraction_model,
+                api_token=self.gemini_api_key
+            ),
+            schema=ResultSchema.model_json_schema(),
+            extraction_type="schema",
+            instruction=instruction,
+            chunk_token_threshold=1000000,
+            overlap_rate=0.0,
+            apply_chunking=False,
+            input_format="markdown",
+            extra_args={
+                "temperature": 0.0,
+                "max_tokens": 32000
+            }
+        )
+        
+        print(f"    ✅ Extraction strategy created successfully")
+        return strategy
+    
+    async def process_crawled_content(self, content_data: dict, url: str, processing_mode: ProcessingMode = None) -> Tuple[bool, str]:
         """Process a single crawled content item through the complete workflow.
         Returns: (success, status)
         """
         try:
+            description = content_data.get('description', '')
+            
+            # Display the processing mode that was already determined (no re-analysis)
+            if self.enable_dual_mode and processing_mode:
+                print(f"  📋 Using processing mode: {processing_mode.value} (determined during extraction)")
+            elif self.enable_dual_mode:
+                print(f"  ⚠️  No processing mode provided, will use default for push")
+            else:
+                print(f"  📋 Legacy mode: {'parent-child' if self.use_parent_child else 'flat'} chunking")
+            
             # Handle knowledge base selection based on mode
             if self.knowledge_base_mode == 'manual' and self.selected_knowledge_base:
                 # Manual mode: use the selected knowledge base
@@ -799,18 +794,13 @@ Examples:
                 
                 print(f"  📂 Using manually selected knowledge base: {kb_name}")
                 
-                # Still analyze content for tags
-                description = content_data.get('description', '')
-                _, suggested_tags = await self.categorize_content(description, url)
-                print(f"  🏷️  Suggested tags: {', '.join(suggested_tags)}")
+                # Manual mode - no categorization needed
                 
             else:
                 # Automatic mode: use smart categorization
-                description = content_data.get('description', '')
-                category, suggested_tags = await self.categorize_content(description, url)
+                category = await self.categorize_content(description, url)
                 
                 print(f"  📂 Category: {category}")
-                print(f"  🏷️  Suggested tags: {', '.join(suggested_tags)}")
                 
                 # Ensure knowledge base exists
                 kb_id = await self.ensure_knowledge_base_exists(category)
@@ -824,15 +814,9 @@ Examples:
                     kb_id = fallback_kb_id
                     print(f"✅ Using fallback knowledge base: general (ID: {kb_id})")
             
-            # Push content to knowledge base with duplicate detection
-            success, status = await self.push_to_knowledge_base(kb_id, content_data, url)
+            # Push content to knowledge base with duplicate detection and mode
+            success, status = await self.push_to_knowledge_base(kb_id, content_data, url, processing_mode)
             
-            # Only bind tags if document was newly created
-            if success and status == "created_new":
-                # Create and bind tags
-                tag_ids = await self.ensure_tags_exist(suggested_tags)
-                if tag_ids:
-                    await self.bind_tags_to_knowledge_base(kb_id, tag_ids)
             
             return success, status
             
@@ -858,7 +842,7 @@ Examples:
         if not self._initialized:
             await self.initialize()
         else:
-            print("📋 Using cached knowledge bases and tags from previous initialization")
+            print("📋 Using cached knowledge bases from previous initialization")
         
         # Preload all documents for efficient duplicate checking
         await self.preload_all_documents()
@@ -873,63 +857,30 @@ Examples:
             verbose=False
         )
         
-        # Load extraction instruction based on chunking mode
-        if self.use_parent_child:
-            prompt_file = "prompts/extraction_prompt_parent_child.txt"
-            fallback_prompt = """You are a RAG Professor creating parent-child hierarchical chunks. Extract content with PARENT sections (###PARENT_SECTION###) providing overview and CHILD sections (###CHILD_SECTION###) containing details. Each parent should have 2-5 children. Parents: 500-1500 words, Children: 200-800 words. Output ONE JSON with title, name, and description fields."""
-        else:
-            prompt_file = "prompts/extraction_prompt_flexible.txt"
-            fallback_prompt = """You are a RAG content extractor optimizing for systems that return ~10 chunks. Extract comprehensive content where EACH SECTION is a COMPLETE, standalone resource.
-
-Create 4-8 logical sections with descriptive titles in brackets. Each section MUST contain ALL information needed to fully answer queries about its topic.
-
-CRITICAL RULES:
-1. Each section should be 300-1500 words and 100% self-contained
-2. NEVER split sequential steps across sections - if you see "Step 1, Step 2, Step 3", keep ALL steps together
-3. For processes (account creation, wallet setup, installations), include EVERYTHING in ONE section:
-   - ALL prerequisites
-   - ALL options/choices
-   - ALL steps from start to finish
-   - ALL troubleshooting
-   - ALL next steps
-4. Include deliberate redundancy - repeat full information wherever relevant
-
-Target 3000-6000 words total with sections separated by ###SECTION_BREAK###. Output only ONE JSON object with title, name, and description fields."""
-            
-        try:
-            with open(prompt_file, "r") as f:
-                instruction = f.read()
-                print(f"✅ Loaded extraction prompt successfully ({len(instruction)} characters)")
-                print(f"📝 Using {'parent-child' if self.use_parent_child else 'flat'} chunking mode")
-                # Debug: Show first 200 chars to verify correct prompt
-                print(f"📝 Prompt preview: {instruction[:200]}...")
-        except FileNotFoundError:
-            print(f"⚠️ {prompt_file} not found, using fallback")
-            # Fallback to flexible approach if file not found
-            instruction = fallback_prompt
-        
-        # Configure LLM extraction strategy with extraction model (smart model)
+        # Print model configuration
         print(f"🧠 Using models:")
         print(f"  📝 Naming: {self.naming_model} (fast)")
         print(f"  🔍 Extraction: {extraction_model} (smart)")
-        
-        llm_strategy = LLMExtractionStrategy(
-            llm_config=LLMConfig(
-                provider=extraction_model,  # Use the extraction model parameter
-                api_token=self.gemini_api_key
-            ),
-            schema=ResultSchema.model_json_schema(),
-            extraction_type="schema",
-            instruction=instruction,
-            chunk_token_threshold=1000000,
-            overlap_rate=0.0,
-            apply_chunking=False,
-            input_format="markdown",
-            extra_args={
-                "temperature": 0.0,
-                "max_tokens": 32000  # Increased to support comprehensive chunks
-            }
-        )
+        if self.enable_dual_mode:
+            if self.use_intelligent_mode:
+                print(f"  🤖 Intelligent mode enabled: Using LLM for content analysis")
+                print(f"     📊 Analysis model: {self.content_processor.analyzer.analysis_model}")
+                print(f"     🔍 Content value assessment (high/medium/low/skip)")
+                print(f"     📄 Single topic/tutorial/profile → Full Doc Mode")
+                print(f"     📚 Multi-topic/mixed content → Paragraph Mode")
+                print(f"     ⏭️  Low-value pages will be skipped")
+            elif self.content_processor.use_word_threshold:
+                print(f"  🔀 Dual-mode enabled: Using WORD count threshold")
+                print(f"     📊 Threshold: {self.content_processor.word_threshold} words")
+                print(f"     📄 ≤ {self.content_processor.word_threshold} words → Full Doc Mode (sections)")
+                print(f"     📚 > {self.content_processor.word_threshold} words → Paragraph Mode (parent-child)")
+            else:
+                print(f"  🔀 Dual-mode enabled: Using TOKEN count threshold")
+                print(f"     🎯 Threshold: {self.content_processor.token_threshold} tokens")
+                print(f"     📄 ≤ {self.content_processor.token_threshold} tokens → Full Doc Mode (sections)")
+                print(f"     📚 > {self.content_processor.token_threshold} tokens → Paragraph Mode (parent-child)")
+        else:
+            print(f"  📄 Single mode: Using {'parent-child' if self.use_parent_child else 'flat'} chunking")
         
         # First, collect URLs without extraction to check for duplicates
         print("\n🔍 Phase 1: Collecting URLs and checking for duplicates...")
@@ -1018,11 +969,8 @@ Target 3000-6000 words total with sections separated by ###SECTION_BREAK###. Out
             workflow_results = []
             extraction_failures = 0
             
-            # Configure extraction for individual URLs
-            extraction_config = CrawlerRunConfig(
-                extraction_strategy=llm_strategy,
-                cache_mode=CacheMode.BYPASS
-            )
+            # Process each new URL with dynamic extraction strategy
+            # We'll create extraction strategy per URL if dual mode is enabled
             
             # Process each new URL
             for idx, process_url in enumerate(urls_to_process, 1):
@@ -1038,60 +986,232 @@ Target 3000-6000 words total with sections separated by ###SECTION_BREAK###. Out
                             print(f"  🔄 Retry attempt {retry_count}/{max_retries}...")
                             await asyncio.sleep(2)  # Brief delay before retry
                         
+                        # First, get the raw content to analyze its length if dual mode is enabled
+                        if self.enable_dual_mode:
+                            print(f"  🔍 Dual-mode enabled: Getting raw content for analysis...")
+                            # Get content without extraction first
+                            raw_config = CrawlerRunConfig(
+                                extraction_strategy=None,
+                                cache_mode=CacheMode.BYPASS
+                            )
+                            raw_result = await crawler.arun(url=process_url, config=raw_config)
+                            
+                            print(f"  📄 Raw crawl result:")
+                            print(f"    Success: {raw_result.success}")
+                            print(f"    Has markdown: {bool(getattr(raw_result, 'markdown', None))}")
+                            print(f"    Markdown length: {len(getattr(raw_result, 'markdown', '')) if getattr(raw_result, 'markdown', None) else 0}")
+                            
+                            if raw_result.success and raw_result.markdown:
+                                # Determine processing mode based on content
+                                print(f"  🔍 Mode selection process:")
+                                
+                                # Check for manual mode first
+                                if self.manual_mode:
+                                    if self.manual_mode == 'full_doc':
+                                        processing_mode = ProcessingMode.FULL_DOC
+                                        print(f"  ✋ Manual mode: FULL DOC")
+                                    else:
+                                        processing_mode = ProcessingMode.PARAGRAPH
+                                        print(f"  ✋ Manual mode: PARAGRAPH")
+                                    mode_analysis = {'manual_mode': True, 'selection_reason': f'Manual override: {self.manual_mode}'}
+                                # Use intelligent mode if enabled
+                                elif self.use_intelligent_mode:
+                                    try:
+                                        print(f"  🤖 Running intelligent content analysis...")
+                                        processing_mode, mode_analysis = await self.content_processor.determine_processing_mode_intelligent(
+                                            raw_result.markdown, process_url
+                                        )
+                                        
+                                        # Check if we should skip this page
+                                        if mode_analysis.get('skip', False):
+                                            print(f"  ⏭️  Skipping page: {mode_analysis.get('skip_reason', 'Low value content')}")
+                                            print(f"     Content value: {mode_analysis.get('content_value', 'low')}")
+                                            continue  # Skip to next URL
+                                        
+                                        print(f"  📊 Intelligent analysis results:")
+                                        print(f"     🎯 Content value: {mode_analysis.get('content_value', 'unknown')}")
+                                        print(f"     📋 Structure: {mode_analysis.get('content_structure', 'unknown')}")
+                                        print(f"     📝 Type: {mode_analysis.get('content_type', 'unknown')}")
+                                        print(f"     🔍 Main topics: {', '.join(mode_analysis.get('main_topics', []))}")
+                                        print(f"  📄 Selected mode: {processing_mode.value}")
+                                        # Show the AI's reasoning if available, otherwise show selection reason
+                                        reason = mode_analysis.get('mode_reason') or mode_analysis.get('selection_reason', '')
+                                        if reason:
+                                            print(f"     ℹ️  {reason}")
+                                        
+                                    except Exception as e:
+                                        print(f"  ⚠️  Intelligent analysis failed: {e}")
+                                        print(f"  🔄 Falling back to threshold-based mode selection...")
+                                        # Fall back to regular mode selection
+                                        url_suggests_full_doc = self.content_processor.should_use_full_doc_for_url(process_url)
+                                        if url_suggests_full_doc:
+                                            processing_mode = ProcessingMode.FULL_DOC
+                                            print(f"  📄 URL pattern suggests full doc mode")
+                                        else:
+                                            processing_mode, mode_analysis = self.content_processor.determine_processing_mode(raw_result.markdown)
+                                            print(f"  📊 Threshold-based analysis:")
+                                            print(f"     📝 Word count: {mode_analysis.get('word_count', 0):,} words")
+                                            print(f"     🎯 Token count: {mode_analysis.get('token_count', 0):,} tokens")
+                                            print(f"  📄 Selected mode: {processing_mode.value}")
+                                            print(f"     ℹ️  {mode_analysis.get('selection_reason', '')}")
+                                else:
+                                    # Regular threshold-based mode selection
+                                    url_suggests_full_doc = self.content_processor.should_use_full_doc_for_url(process_url)
+                                    print(f"    URL suggests full doc: {url_suggests_full_doc}")
+                                    
+                                    if url_suggests_full_doc:
+                                        processing_mode = ProcessingMode.FULL_DOC
+                                        print(f"  📄 URL pattern suggests full doc mode")
+                                        print(f"    Final selected mode: {processing_mode.value}")
+                                    else:
+                                        processing_mode, mode_analysis = self.content_processor.determine_processing_mode(raw_result.markdown)
+                                        print(f"  📊 Content analysis:")
+                                        print(f"     📝 Word count: {mode_analysis.get('word_count', 0):,} words")
+                                        print(f"     🎯 Token count: {mode_analysis.get('token_count', 0):,} tokens")
+                                        print(f"     📏 Using {mode_analysis.get('threshold_type', 'word')} threshold")
+                                        print(f"     🔍 Decision: {mode_analysis.get('decision', '')}")
+                                        print(f"  📄 Selected mode: {processing_mode.value}")
+                                        print(f"     ℹ️  {mode_analysis.get('selection_reason', '')}")
+                                
+                                # Create appropriate extraction strategy
+                                print(f"  🛠️  Creating extraction strategy for {processing_mode.value} mode...")
+                                extraction_strategy = self.create_extraction_strategy(processing_mode, extraction_model)
+                                extraction_config = CrawlerRunConfig(
+                                    extraction_strategy=extraction_strategy,
+                                    cache_mode=CacheMode.BYPASS
+                                )
+                            else:
+                                print(f"  ⚠️  Failed to get raw content for analysis")
+                                print(f"    Raw result success: {raw_result.success}")
+                                print(f"    Raw result markdown: {bool(getattr(raw_result, 'markdown', None))}")
+                                if hasattr(raw_result, 'error_message'):
+                                    print(f"    Error: {raw_result.error_message}")
+                                print(f"    Using default mode...")
+                                # Fall back to default strategy
+                                processing_mode = ProcessingMode.PARAGRAPH if self.use_parent_child else None
+                                extraction_strategy = self.create_extraction_strategy(processing_mode, extraction_model)
+                                extraction_config = CrawlerRunConfig(
+                                    extraction_strategy=extraction_strategy,
+                                    cache_mode=CacheMode.BYPASS
+                                )
+                        else:
+                            # Legacy mode - create extraction strategy based on use_parent_child
+                            processing_mode = ProcessingMode.PARAGRAPH if self.use_parent_child else None
+                            extraction_strategy = self.create_extraction_strategy(processing_mode, extraction_model)
+                            extraction_config = CrawlerRunConfig(
+                                extraction_strategy=extraction_strategy,
+                                cache_mode=CacheMode.BYPASS
+                            )
+                        
+                        # Now extract with the appropriate strategy
                         result = await crawler.arun(url=process_url, config=extraction_config)
                         
-                        if result.success and result.extracted_content:
-                            # Parse extracted data
+                        # Enhanced logging for debugging
+                        print(f"  🔍 Crawl result details:")
+                        print(f"    Success: {result.success}")
+                        print(f"    Has extracted_content: {bool(result.extracted_content)}")
+                        print(f"    Has markdown: {bool(getattr(result, 'markdown', None))}")
+                        print(f"    Has cleaned_html: {bool(getattr(result, 'cleaned_html', None))}")
+                        
+                        if hasattr(result, 'error_message') and result.error_message:
+                            print(f"    Error message: {result.error_message}")
+                        
+                        if result.extracted_content:
+                            print(f"    Extracted content type: {type(result.extracted_content)}")
                             if isinstance(result.extracted_content, str):
-                                extracted_data = json.loads(result.extracted_content)
+                                print(f"    Extracted content length: {len(result.extracted_content)} chars")
+                                print(f"    Extracted content preview: {result.extracted_content[:200]}...")
                             else:
-                                extracted_data = result.extracted_content
-                            
-                            if isinstance(extracted_data, list):
-                                extracted_data = extracted_data[0] if extracted_data else {}
-                            
-                            if extracted_data and extracted_data.get('description'):
-                                # Save JSON
-                                url_filename = process_url.replace("https://", "").replace("http://", "")
-                                url_filename = url_filename.replace("/", "_").replace("?", "_").replace(":", "_")
-                                if len(url_filename) > 100:
-                                    url_filename = url_filename[:100]
-                                
-                                json_file = Path(output_dir) / f"{url_filename}.json"
-                                with open(json_file, "w", encoding="utf-8") as f:
-                                    json.dump(extracted_data, f, indent=2, ensure_ascii=False)
-                                
-                                extracted_files.append(str(json_file))
-                                print(f"  💾 Saved: {json_file}")
-                                
-                                # Display summary
-                                print(f"  📄 Title: {extracted_data.get('title', 'N/A')}")
-                                desc = extracted_data.get('description', '')
-                                desc_length = len(desc)
-                                if self.use_parent_child:
-                                    parent_count = desc.count('###PARENT_SECTION###') + 1
-                                    child_count = desc.count('###CHILD_SECTION###')
-                                    print(f"  📝 Description: {desc_length} characters in {parent_count} parent chunks with {child_count} child chunks")
+                                print(f"    Extracted content: {result.extracted_content}")
+                        
+                        if result.success and result.extracted_content:
+                            # Parse extracted data with enhanced error handling
+                            try:
+                                if isinstance(result.extracted_content, str):
+                                    print(f"  📝 Parsing JSON string...")
+                                    extracted_data = json.loads(result.extracted_content)
                                 else:
-                                    chunk_count = desc.count('###SECTION_BREAK###') + 1
-                                    print(f"  📝 Description: {desc_length} characters in {chunk_count} chunks")
+                                    print(f"  📝 Using direct extracted content...")
+                                    extracted_data = result.extracted_content
                                 
-                                # Process through workflow
-                                workflow_success, status = await self.process_crawled_content(
-                                    extracted_data, process_url
-                                )
+                                print(f"  📊 Parsed data type: {type(extracted_data)}")
                                 
-                                workflow_results.append({
-                                    'url': process_url,
-                                    'title': extracted_data.get('title', 'Untitled'),
-                                    'success': workflow_success,
-                                    'status': status,
-                                    'category': (await self.categorize_content(desc, process_url))[0]
-                                })
+                                if isinstance(extracted_data, list):
+                                    print(f"  📋 List with {len(extracted_data)} items")
+                                    extracted_data = extracted_data[0] if extracted_data else {}
                                 
-                                extraction_successful = True
-                            else:
-                                print(f"  ⚠️  No valid content extracted")
+                                print(f"  🔑 Final data keys: {list(extracted_data.keys()) if isinstance(extracted_data, dict) else 'Not a dict'}")
+                                
+                                if extracted_data and extracted_data.get('description'):
+                                    print(f"  ✅ Valid description found: {len(extracted_data.get('description', ''))} chars")
+                                    # Save JSON
+                                    url_filename = process_url.replace("https://", "").replace("http://", "")
+                                    url_filename = url_filename.replace("/", "_").replace("?", "_").replace(":", "_")
+                                    if len(url_filename) > 100:
+                                        url_filename = url_filename[:100]
+                                    
+                                    json_file = Path(output_dir) / f"{url_filename}.json"
+                                    with open(json_file, "w", encoding="utf-8") as f:
+                                        json.dump(extracted_data, f, indent=2, ensure_ascii=False)
+                                    
+                                    extracted_files.append(str(json_file))
+                                    print(f"  💾 Saved: {json_file}")
+                                    
+                                    # Display summary
+                                    print(f"  📄 Title: {extracted_data.get('title', 'N/A')}")
+                                    desc = extracted_data.get('description', '')
+                                    desc_length = len(desc)
+                                    # Display summary based on actual content structure
+                                    if '###PARENT_SECTION###' in desc:
+                                        parent_count = desc.count('###PARENT_SECTION###')
+                                        child_count = desc.count('###CHILD_SECTION###')
+                                        print(f"  📝 Description: {desc_length} characters in {parent_count} parent chunks with {child_count} child chunks")
+                                    elif '###SECTION###' in desc:
+                                        section_count = desc.count('###SECTION###')
+                                        print(f"  📝 Description: {desc_length} characters in {section_count} sections (full doc mode)")
+                                    elif '###SECTION_BREAK###' in desc:
+                                        chunk_count = desc.count('###SECTION_BREAK###') + 1
+                                        print(f"  📝 Description: {desc_length} characters in {chunk_count} chunks")
+                                    else:
+                                        # No recognized markers
+                                        print(f"  📝 Description: {desc_length} characters")
+                                    
+                                    # Process through workflow (pass the processing mode that was determined)
+                                    workflow_success, status = await self.process_crawled_content(
+                                        extracted_data, process_url, processing_mode
+                                    )
+                                    
+                                    workflow_results.append({
+                                        'url': process_url,
+                                        'title': extracted_data.get('title', 'Untitled'),
+                                        'success': workflow_success,
+                                        'status': status,
+                                        'category': await self.categorize_content(desc, process_url)
+                                    })
+                                    
+                                    extraction_successful = True
+                                else:
+                                    print(f"  ⚠️  No valid content extracted")
+                                    print(f"    Reason: Missing description field or empty data")
+                                    print(f"    Data structure: {extracted_data}")
+                                    if retry_count < max_retries:
+                                        retry_count += 1
+                                    else:
+                                        extraction_failures += 1
+                                        break
+                            
+                            except json.JSONDecodeError as e:
+                                print(f"  ❌ JSON parsing error: {e}")
+                                print(f"    Raw content: {result.extracted_content[:500]}...")
+                                if retry_count < max_retries:
+                                    retry_count += 1
+                                else:
+                                    extraction_failures += 1
+                                    break
+                            except Exception as e:
+                                print(f"  ❌ Extraction parsing error: {e}")
+                                import traceback
+                                traceback.print_exc()
                                 if retry_count < max_retries:
                                     retry_count += 1
                                 else:
@@ -1139,19 +1259,11 @@ Target 3000-6000 words total with sections separated by ###SECTION_BREAK###. Out
                 for name, kb_id in self.knowledge_bases.items():
                     print(f"  • {name} (ID: {kb_id})")
                 
-                # Show tags created/used
-                print(f"\n🏷️  Tags: {len(self.tags_cache)}")
-                for name in self.tags_cache.keys():
-                    print(f"  • {name}")
-                
                 # Show documents cached
                 total_docs_cached = sum(len(docs) for docs in self.document_cache.values())
                 print(f"\n📄 Total documents tracked: {total_docs_cached}")
             
-            # Show token usage (keeping original logic)
-            if hasattr(llm_strategy, 'show_usage'):
-                print("\n🔢 Token Usage:")
-                llm_strategy.show_usage()
+            # Note: Token usage tracking would need to aggregate across multiple strategies in dual mode
 
 
 # Example usage and main function
@@ -1159,12 +1271,13 @@ async def main():
     """Example usage of the CrawlWorkflow with dual-model setup."""
     load_dotenv(override=True)
     
-    # Initialize workflow with dual-model configuration
+    # Initialize workflow with dual-model and dual-mode configuration
     workflow = CrawlWorkflow(
         dify_base_url="http://localhost:8088",
         dify_api_key="dataset-VoYPMEaQ8L1udk2F6oek99XK",  # Replace with your API key
         gemini_api_key=os.getenv('GEMINI_API_KEY'),
-        use_parent_child=True,  # Enable parent-child hierarchical chunking
+        enable_dual_mode=True,  # Enable automatic mode selection based on content length
+        word_threshold=4000,    # Switch to full doc mode for content under 4000 words
         naming_model="gemini/gemini-1.5-flash"  # Fast model for naming (cheap & fast)
     )
     

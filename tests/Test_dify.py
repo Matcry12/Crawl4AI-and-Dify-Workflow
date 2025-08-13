@@ -9,11 +9,19 @@ class DifyAPI:
             'Content-Type': 'application/json'
         }
     
-    def create_document_from_text(self, dataset_id, name="text", text="text", indexing_technique="high_quality", use_parent_child=True):
-        """Create a Document from Text with support for parent-child chunking"""
+    def create_document_from_text(self, dataset_id, name="text", text="text", indexing_technique="high_quality", use_parent_child=True, custom_config=None):
+        """Create a Document from Text with support for parent-child chunking or custom configuration"""
         url = f"{self.base_url}/v1/datasets/{dataset_id}/document/create-by-text"
         
-        if use_parent_child:
+        # Use custom configuration if provided
+        if custom_config:
+            data = {
+                "name": name,
+                "text": text,
+                "indexing_technique": indexing_technique,
+                **custom_config
+            }
+        elif use_parent_child:
             # Parent-child hierarchical chunking configuration
             data = {
                 "name": name,
