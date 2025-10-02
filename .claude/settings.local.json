@@ -16,7 +16,14 @@
       "Bash(mkdir:*)",
       "Bash(pip install:*)",
       "mcp__ide__getDiagnostics",
-      "Bash(true)"
+      "Bash(true)",
+      "Bash(git checkout:*)",
+      "Bash(chmod:*)",
+      "Bash(git restore:*)",
+      "Bash(playwright install)",
+      "Bash(python3:*)",
+      "Bash(grep:*)",
+      "Bash(awk:*)"
     ],
     "deny": []
   }
