@@ -1,9 +1,11 @@
 import asyncio
 import json
 import os
+import logging
 from pathlib import Path
 from typing import List, Tuple
 from urllib.parse import urlparse
+from datetime import datetime
 
 from crawl4ai import AsyncWebCrawler
 from crawl4ai.async_configs import BrowserConfig, CrawlerRunConfig, CacheMode, LLMConfig
@@ -19,6 +21,14 @@ import sys
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from tests.Test_dify import DifyAPI
 from content_processor import ContentProcessor, ProcessingMode
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger(__name__)
 
 
 class CrawlWorkflow:
@@ -46,6 +56,7 @@ class CrawlWorkflow:
         self.naming_model = naming_model or "gemini/gemini-1.5-flash"  # Default to fast model for naming
         self.knowledge_bases = {}  # Cache of existing knowledge bases
         self.document_cache = {}  # Cache of existing documents by knowledge base {kb_id: {doc_name: doc_id}}
+        self.metadata_cache = {}  # Cache of metadata fields by knowledge base {kb_id: {name: {id, type}}}
         self._initialized = False  # Track initialization state
         self.use_parent_child = use_parent_child  # Enable parent-child chunking (deprecated with dual mode)
         self.knowledge_base_mode = knowledge_base_mode  # 'automatic' or 'manual'
@@ -75,8 +86,8 @@ class CrawlWorkflow:
             response = self.dify_api.get_knowledge_base_list()
             if response.status_code == 200:
                 kb_data = response.json()
-                print(f"Debug: Knowledge bases response: {kb_data}")
-                
+                logger.debug(f"Knowledge bases response: {kb_data}")
+
                 # Handle different possible response structures
                 kb_list = []
                 if isinstance(kb_data, dict):
@@ -88,7 +99,7 @@ class CrawlWorkflow:
                         kb_list = kb_data['data']
                 elif isinstance(kb_data, list):
                     kb_list = kb_data
-                
+
                 # Process knowledge bases with proper error handling
                 for kb in kb_list:
                     try:
@@ -96,30 +107,30 @@ class CrawlWorkflow:
                             # Try different possible field names
                             kb_name = kb.get('name') or kb.get('title') or kb.get('dataset_name')
                             kb_id = kb.get('id') or kb.get('dataset_id') or kb.get('uuid')
-                            
+
                             if kb_name and kb_id:
                                 self.knowledge_bases[kb_name] = kb_id
-                                print(f"  ✅ Found existing knowledge base: {kb_name} (ID: {kb_id})")
+                                logger.info(f"  ✅ Found existing knowledge base: {kb_name} (ID: {kb_id})")
                             else:
-                                print(f"  ⚠️  Skipping knowledge base with incomplete data: {kb}")
+                                logger.warning(f"  ⚠️  Skipping knowledge base with incomplete data: {kb}")
                     except Exception as kb_error:
-                        print(f"  ⚠️  Error processing knowledge base entry: {kb_error}")
+                        logger.warning(f"  ⚠️  Error processing knowledge base entry: {kb_error}")
                         continue
             else:
-                print(f"Failed to get knowledge bases: {response.status_code} - {response.text}")
+                logger.error(f"Failed to get knowledge bases: {response.status_code} - {response.text}")
             
                         
         except Exception as e:
-            print(f"Warning: Could not initialize existing data: {e}")
+            logger.warning(f"Could not initialize existing data: {e}")
             import traceback
             traceback.print_exc()
         finally:
             self._initialized = True
-            print(f"📊 Initialization complete: {len(self.knowledge_bases)} knowledge bases cached")
+            logger.info(f"📊 Initialization complete: {len(self.knowledge_bases)} knowledge bases cached")
     
     async def refresh_cache(self):
         """Force refresh of knowledge bases cache from API."""
-        print("🔄 Refreshing cache from API...")
+        logger.info("🔄 Refreshing cache from API...")
         self.knowledge_bases.clear()
         self.document_cache.clear()
         await self.initialize()
@@ -223,18 +234,18 @@ class CrawlWorkflow:
             
             # Check exact match after normalization
             if new_normalized == existing_normalized:
-                print(f"  🎯 Exact match: '{new_category}' → '{existing_kb}'")
+                logger.info(f"  🎯 Exact match: '{new_category}' → '{existing_kb}'")
                 return existing_kb
-            
+
             # Check similarity ratio
             similarity = SequenceMatcher(None, new_normalized, existing_normalized).ratio()
             if similarity > best_score:
                 best_match = existing_kb
                 best_score = similarity
-        
+
         # Use best match if above threshold
         if best_score >= threshold:
-            print(f"  🔄 Fuzzy match: '{new_category}' → '{best_match}' (similarity: {best_score:.2%})")
+            logger.info(f"  🔄 Fuzzy match: '{new_category}' → '{best_match}' (similarity: {best_score:.2%})")
             return best_match
         
         return new_category
@@ -278,7 +289,7 @@ class CrawlWorkflow:
         
         # Use keyword match if above threshold
         if best_score >= threshold:
-            print(f"  🔑 Keyword match: '{new_category}' → '{best_match}' (score: {best_score:.2%})")
+            logger.info(f"  🔑 Keyword match: '{new_category}' → '{best_match}' (score: {best_score:.2%})")
             return best_match
         
         return new_category
@@ -323,9 +334,9 @@ Examples:
             # Use the configured naming model for categorization
             # For now, we'll use a simple API call approach
             # TODO: Implement proper model switching when crawl4ai supports it
-            
-            print(f"  🤖 Using naming model: {self.naming_model}")
-            
+
+            logger.info(f"  🤖 Using naming model: {self.naming_model}")
+
             # Use direct Gemini API call (will be replaced with proper model switching later)
             import requests
             
@@ -360,20 +371,20 @@ Examples:
                 if response.status_code == 200:
                     result = response.json()
                     text_response = result['candidates'][0]['content']['parts'][0]['text']
-                    print(f"  🤖 Naming model response: {text_response[:100]}...")
-                
+                    logger.info(f"  🤖 Naming model response: {text_response[:100]}...")
+
                 # Parse JSON response
                 json_match = re.search(r'\{[^}]+\}', text_response)
                 if json_match:
                     categorization_data = json.loads(json_match.group())
                     category = categorization_data.get('category', 'general')
-                    
+
                     if category:
-                        print(f"  🤖 Raw naming result: {category}")
-                        
+                        logger.info(f"  🤖 Raw naming result: {category}")
+
                         # Step 2: Preprocess/normalize the category name
                         category = self.preprocess_category_name(category)
-                        print(f"  📝 Normalized: {category}")
+                        logger.info(f"  📝 Normalized: {category}")
                         
                         # Step 3: Check for fuzzy matches with existing KBs (saves tokens!)
                         matched_category = self.find_best_matching_kb(category, threshold=0.85)
@@ -389,10 +400,10 @@ Examples:
                         return category
             
         except Exception as e:
-            print(f"  ⚠️  LLM categorization failed: {e}, using fallback")
-        
+            logger.warning(f"  ⚠️  LLM categorization failed: {e}, using fallback")
+
         # Step 5: Fallback to enhanced rule-based categorization
-        print(f"  🔧 Using enhanced rule-based fallback")
+        logger.info(f"  🔧 Using enhanced rule-based fallback")
         category = "general"
         
         # Prepare content sample for analysis
@@ -437,11 +448,11 @@ Examples:
                 category = "api_docs"
         
         # Step 6: Apply smart matching to fallback result too
-        print(f"  🔧 Fallback result: {category}")
-        
+        logger.info(f"  🔧 Fallback result: {category}")
+
         # Normalize the fallback category
         category = self.preprocess_category_name(category)
-        print(f"  📝 Normalized fallback: {category}")
+        logger.info(f"  📝 Normalized fallback: {category}")
         
         # Check for matches with existing KBs
         matched_category = self.find_best_matching_kb(category, threshold=0.85)
@@ -491,38 +502,38 @@ Examples:
                             # Check for exact match or category match
                             if existing_name == kb_name or existing_name.lower().replace(' ', '_') == category:
                                 self.knowledge_bases[category] = kb_id
-                                print(f"✅ Found existing knowledge base: {existing_name} (ID: {kb_id})")
+                                logger.info(f"✅ Found existing knowledge base: {existing_name} (ID: {kb_id})")
                                 return kb_id
         except Exception as e:
-            print(f"Warning: Could not refresh knowledge base list: {e}")
+            logger.warning(f"Could not refresh knowledge base list: {e}")
         
         # Create new knowledge base if none found
         response = self.dify_api.create_empty_knowledge_base(kb_name)
         
         if response.status_code == 200:
             kb_data = response.json()
-            print(f"Debug: Create KB response: {kb_data}")
-            
+            logger.debug(f"Create KB response: {kb_data}")
+
             # Handle different possible response structures for creation
             kb_id = None
             if isinstance(kb_data, dict):
                 kb_id = kb_data.get('id') or kb_data.get('dataset_id') or kb_data.get('uuid')
-                
+
                 # Some APIs return the created object nested
                 if not kb_id and 'data' in kb_data:
                     data = kb_data['data']
                     if isinstance(data, dict):
                         kb_id = data.get('id') or data.get('dataset_id') or data.get('uuid')
-            
+
             if kb_id:
                 self.knowledge_bases[category] = kb_id
-                print(f"✅ Created new knowledge base: {kb_name} (ID: {kb_id})")
+                logger.info(f"✅ Created new knowledge base: {kb_name} (ID: {kb_id})")
                 return kb_id
             else:
-                print(f"❌ Failed to extract knowledge base ID from response: {kb_data}")
+                logger.error(f"❌ Failed to extract knowledge base ID from response: {kb_data}")
                 return None
         else:
-            print(f"❌ Failed to create knowledge base '{kb_name}': {response.status_code} - {response.text}")
+            logger.error(f"❌ Failed to create knowledge base '{kb_name}': {response.status_code} - {response.text}")
             return None
     
     
@@ -538,32 +549,32 @@ Examples:
             while True:
                 response = self.dify_api.get_document_list(kb_id, page=page, limit=100)
                 if response.status_code != 200:
-                    print(f"❌ Failed to get documents for KB {kb_id}: {response.status_code}")
+                    logger.error(f"❌ Failed to get documents for KB {kb_id}: {response.status_code}")
                     break
-                
+
                 data = response.json()
                 doc_list = data.get('data', [])
-                
+
                 if not doc_list:
                     break
-                
+
                 for doc in doc_list:
                     doc_name = doc.get('name', '')
                     doc_id = doc.get('id', '')
                     if doc_name and doc_id:
                         documents[doc_name] = doc_id
-                
+
                 # Check if there are more pages
                 if not data.get('has_more', False):
                     break
-                    
+
                 page += 1
-            
+
             self.document_cache[kb_id] = documents
-            print(f"📚 Loaded {len(documents)} existing documents for knowledge base {kb_id}")
-            
+            logger.info(f"📚 Loaded {len(documents)} existing documents for knowledge base {kb_id}")
+
         except Exception as e:
-            print(f"❌ Error loading documents for KB {kb_id}: {e}")
+            logger.error(f"❌ Error loading documents for KB {kb_id}: {e}")
             self.document_cache[kb_id] = {}
         
         return documents
@@ -592,14 +603,129 @@ Examples:
     
     async def preload_all_documents(self):
         """Preload all documents from all knowledge bases for efficient checking."""
-        print("📚 Preloading all documents from knowledge bases...")
+        logger.info("📚 Preloading all documents from knowledge bases...")
         total_docs = 0
-        
+
         for kb_name, kb_id in self.knowledge_bases.items():
             docs = await self.load_documents_for_knowledge_base(kb_id)
             total_docs += len(docs)
-        
-        print(f"✅ Preloaded {total_docs} documents from {len(self.knowledge_bases)} knowledge bases")
+
+        logger.info(f"✅ Preloaded {total_docs} documents from {len(self.knowledge_bases)} knowledge bases")
+
+    async def ensure_metadata_fields(self, kb_id: str) -> dict:
+        """Ensure standard metadata fields exist in a knowledge base.
+        Returns: dict mapping metadata names to their IDs and types
+        """
+        # Check cache first
+        if kb_id in self.metadata_cache:
+            return self.metadata_cache[kb_id]
+
+        # Get existing metadata fields
+        response = self.dify_api.get_metadata_list(kb_id)
+        existing_metadata = {}
+
+        if response.status_code == 200:
+            data = response.json()
+            for field in data.get('doc_metadata', []):
+                field_name = field.get('name')
+                field_id = field.get('id')
+                field_type = field.get('type')
+                if field_name and field_id:
+                    existing_metadata[field_name] = {'id': field_id, 'type': field_type}
+            logger.info(f"  📋 Found {len(existing_metadata)} existing metadata fields")
+
+        # Define required metadata fields
+        required_fields = {
+            'source_url': 'string',
+            'crawl_date': 'time',
+            'domain': 'string',
+            'content_type': 'string',
+            'processing_mode': 'string',
+            'word_count': 'number'
+        }
+
+        # Create missing fields
+        for field_name, field_type in required_fields.items():
+            if field_name not in existing_metadata:
+                logger.info(f"  ➕ Creating metadata field: {field_name} ({field_type})")
+                response = self.dify_api.create_knowledge_metadata(kb_id, field_type, field_name)
+
+                logger.debug(f"    Response status: {response.status_code}")
+                logger.debug(f"    Response body: {response.text}")
+
+                if response.status_code == 200:
+                    field_data = response.json()
+                    existing_metadata[field_name] = {
+                        'id': field_data.get('id'),
+                        'type': field_type
+                    }
+                    logger.info(f"    ✅ Created: {field_name} (ID: {field_data.get('id')})")
+                elif response.status_code == 201:
+                    # Some APIs return 201 for resource creation
+                    field_data = response.json()
+                    existing_metadata[field_name] = {
+                        'id': field_data.get('id'),
+                        'type': field_type
+                    }
+                    logger.info(f"    ✅ Created: {field_name} (ID: {field_data.get('id')})")
+                else:
+                    logger.error(f"    ❌ Failed to create {field_name} (status {response.status_code}): {response.text}")
+
+        # Cache the metadata
+        self.metadata_cache[kb_id] = existing_metadata
+        return existing_metadata
+
+    def prepare_document_metadata(self, url: str, processing_mode, word_count: int, metadata_fields: dict) -> list:
+        """Prepare metadata values for a document.
+
+        Args:
+            url: Source URL
+            processing_mode: ProcessingMode enum value
+            word_count: Word count of content
+            metadata_fields: dict of available metadata fields {name: {id, type}}
+
+        Returns:
+            List of metadata assignments [{"id": "...", "value": "...", "name": "..."}]
+        """
+        parsed_url = urlparse(url)
+        domain = parsed_url.netloc.replace('www.', '')
+
+        # Determine content type from URL
+        path_lower = parsed_url.path.lower()
+        if any(x in path_lower for x in ['/docs/', '/documentation/', '/guide/']):
+            content_type = 'documentation'
+        elif any(x in path_lower for x in ['/blog/', '/article/', '/news/']):
+            content_type = 'article'
+        elif any(x in path_lower for x in ['/tutorial/', '/how-to/']):
+            content_type = 'tutorial'
+        elif any(x in path_lower for x in ['/api/', '/reference/']):
+            content_type = 'api_reference'
+        else:
+            content_type = 'general'
+
+        # Build metadata list
+        metadata_list = []
+        current_time = int(datetime.now().timestamp())
+
+        metadata_values = {
+            'source_url': url,
+            'crawl_date': current_time,
+            'domain': domain,
+            'content_type': content_type,
+            'processing_mode': processing_mode.value if processing_mode else 'unknown',
+            'word_count': word_count
+        }
+
+        for field_name, value in metadata_values.items():
+            if field_name in metadata_fields:
+                field_info = metadata_fields[field_name]
+                metadata_list.append({
+                    'id': field_info['id'],
+                    'value': value,
+                    'name': field_name
+                })
+
+        return metadata_list
     
     async def push_to_knowledge_base(self, kb_id: str, content_data: dict, url: str, processing_mode: ProcessingMode = None) -> Tuple[bool, str]:
         """Push content to specific knowledge base with duplicate detection and dual-mode support.
@@ -607,22 +733,26 @@ Examples:
         """
         # Normalize URL
         url = url.rstrip('/')
-        
+
         markdown_content = content_data.get('description', '')
         title = content_data.get('title', 'Document')
-        
+
         # Generate consistent document name based on URL (title is ignored)
         doc_name = self.generate_document_name(url, title)
-        print(f"  🔍 Document name for push: {doc_name}")
-        
+        logger.info(f"  🔍 Document name for push: {doc_name}")
+
         # Load existing documents for this knowledge base
         existing_docs = await self.load_documents_for_knowledge_base(kb_id)
-        
+
         # Check if document already exists
         if doc_name in existing_docs:
-            print(f"⏭️  Document already exists: {doc_name} (ID: {existing_docs[doc_name]})")
+            logger.info(f"⏭️  Document already exists: {doc_name} (ID: {existing_docs[doc_name]})")
             return True, "skipped_existing"
-        
+
+        # Ensure metadata fields exist for this KB
+        logger.info(f"  🏷️  Ensuring metadata fields exist...")
+        metadata_fields = await self.ensure_metadata_fields(kb_id)
+
         # Determine configuration based on mode
         if self.enable_dual_mode and processing_mode:
             # Use dual-mode configuration
@@ -641,55 +771,70 @@ Examples:
                 text=markdown_content,
                 use_parent_child=self.use_parent_child
             )
-        
+
         if response.status_code == 200:
             # Update cache with new document
             doc_data = response.json()
-            print(f"  📄 Document creation response: {json.dumps(doc_data, indent=2)}")
-            
+            logger.info(f"  📄 Document creation response: {json.dumps(doc_data, indent=2)}")
+
             doc_id = doc_data.get('id') or doc_data.get('document', {}).get('id')
             if doc_id:
                 existing_docs[doc_name] = doc_id
-                print(f"✅ Successfully pushed new document: {doc_name} (ID: {doc_id})")
+                logger.info(f"✅ Successfully pushed new document: {doc_name} (ID: {doc_id})")
+
+                # Assign metadata to the document
+                word_count = len(markdown_content.split())
+                metadata_list = self.prepare_document_metadata(url, processing_mode, word_count, metadata_fields)
+
+                if metadata_list:
+                    logger.info(f"  🏷️  Assigning {len(metadata_list)} metadata fields...")
+                    metadata_response = self.dify_api.assign_document_metadata(kb_id, doc_id, metadata_list)
+                    if metadata_response.status_code == 200:
+                        logger.info(f"    ✅ Metadata assigned successfully")
+                        for meta in metadata_list:
+                            if meta['name'] in ['source_url', 'domain', 'content_type', 'processing_mode']:
+                                logger.info(f"      • {meta['name']}: {meta['value']}")
+                    else:
+                        logger.warning(f"    ⚠️  Failed to assign metadata: {metadata_response.text}")
             else:
-                print(f"⚠️  Document created but no ID returned: {doc_name}")
-                print(f"  Response structure: {list(doc_data.keys())}")
-            
+                logger.warning(f"⚠️  Document created but no ID returned: {doc_name}")
+                logger.info(f"  Response structure: {list(doc_data.keys())}")
+
             # Check indexing status if available
             indexing_status = doc_data.get('indexing_status') or doc_data.get('document', {}).get('indexing_status')
             if indexing_status:
-                print(f"  📊 Indexing status: {indexing_status}")
-                
+                logger.info(f"  📊 Indexing status: {indexing_status}")
+
             return True, "created_new"
         else:
-            print(f"❌ Failed to push document: {response.status_code}")
-            print(f"  Error response: {response.text}")
+            logger.error(f"❌ Failed to push document: {response.status_code}")
+            logger.error(f"  Error response: {response.text}")
             return False, "failed"
     
     
     def create_extraction_strategy(self, mode: ProcessingMode, extraction_model: str) -> LLMExtractionStrategy:
         """Create an extraction strategy based on the processing mode."""
-        print(f"    🛠️  Creating strategy for mode: {mode.value if mode else 'None'}")
-        print(f"    🔍 Mode type: {type(mode)}")
-        print(f"    🔍 Mode == FULL_DOC: {mode == ProcessingMode.FULL_DOC}")
-        print(f"    🔍 Mode == PARAGRAPH: {mode == ProcessingMode.PARAGRAPH}")
-        print(f"    🔍 Mode is None: {mode is None}")
+        logger.debug(f"Creating strategy for mode: {mode.value if mode else 'None'}")
+        logger.debug(f"Mode type: {type(mode)}")
+        logger.debug(f"Mode == FULL_DOC: {mode == ProcessingMode.FULL_DOC}")
+        logger.debug(f"Mode == PARAGRAPH: {mode == ProcessingMode.PARAGRAPH}")
+        logger.debug(f"Mode is None: {mode is None}")
         
         # Get the appropriate prompt
         if mode == ProcessingMode.FULL_DOC:
             prompt_file = "prompts/extraction_prompt_full_doc.txt"
             fallback_prompt = self.content_processor._get_full_doc_prompt()
-            print(f"    📝 Using full doc prompt")
+            logger.debug(f"Using full doc prompt")
         elif mode == ProcessingMode.PARAGRAPH:
             prompt_file = "prompts/extraction_prompt_parent_child.txt"
             fallback_prompt = self.content_processor._get_paragraph_prompt()
-            print(f"    📝 Using paragraph (parent-child) prompt")
+            logger.debug(f"Using paragraph (parent-child) prompt")
         else:
             # Default to legacy behavior
             if self.use_parent_child:
                 prompt_file = "prompts/extraction_prompt_parent_child.txt"
                 fallback_prompt = self.content_processor._get_paragraph_prompt()
-                print(f"    📝 Using legacy parent-child prompt")
+                logger.debug(f"Using legacy parent-child prompt")
             else:
                 prompt_file = "prompts/extraction_prompt_flexible.txt"
                 fallback_prompt = """You are a RAG content extractor optimizing for systems that return ~10 chunks. Extract comprehensive content where EACH SECTION is a COMPLETE, standalone resource.
@@ -708,37 +853,37 @@ CRITICAL RULES:
 4. Include deliberate redundancy - repeat full information wherever relevant
 
 Target 3000-6000 words total with sections separated by ###SECTION_BREAK###. Output only ONE JSON object with title, name, and description fields."""
-                print(f"    📝 Using legacy flexible prompt")
-        
+                logger.debug(f"Using legacy flexible prompt")
+
         # Try to load prompt from file
         try:
             with open(prompt_file, "r") as f:
                 instruction = f.read()
-            print(f"    ✅ Loaded prompt from file: {prompt_file}")
-            print(f"    📏 Prompt length: {len(instruction)} characters")
+            logger.debug(f"Loaded prompt from file: {prompt_file}")
+            logger.debug(f"Prompt length: {len(instruction)} characters")
         except FileNotFoundError:
             instruction = fallback_prompt
-            print(f"    ⚠️  File not found: {prompt_file}, using fallback prompt")
-            print(f"    📏 Fallback prompt length: {len(instruction)} characters")
-        
+            logger.warning(f"File not found: {prompt_file}, using fallback prompt")
+            logger.debug(f"Fallback prompt length: {len(instruction)} characters")
+
         # Debug: Check what separators are in the instruction
         has_parent = "###PARENT_SECTION###" in instruction
-        has_child = "###CHILD_SECTION###" in instruction  
+        has_child = "###CHILD_SECTION###" in instruction
         has_section = "###SECTION###" in instruction
         has_break = "###SECTION_BREAK###" in instruction
-        
-        print(f"    🔍 Prompt content analysis:")
-        print(f"      Has ###PARENT_SECTION###: {has_parent}")
-        print(f"      Has ###CHILD_SECTION###: {has_child}")
-        print(f"      Has ###SECTION###: {has_section}")
-        print(f"      Has ###SECTION_BREAK###: {has_break}")
-        
+
+        logger.debug(f"Prompt content analysis:")
+        logger.debug(f"  Has ###PARENT_SECTION###: {has_parent}")
+        logger.debug(f"  Has ###CHILD_SECTION###: {has_child}")
+        logger.debug(f"  Has ###SECTION###: {has_section}")
+        logger.debug(f"  Has ###SECTION_BREAK###: {has_break}")
+
         # Create extraction strategy
-        print(f"    🤖 Model: {extraction_model}")
-        print(f"    🎯 Schema: ResultSchema")
-        print(f"    🔧 Extraction type: schema")
-        print(f"    🌡️  Temperature: 0.0")
-        print(f"    📊 Max tokens: 32000")
+        logger.debug(f"Model: {extraction_model}")
+        logger.debug(f"Schema: ResultSchema")
+        logger.debug(f"Extraction type: schema")
+        logger.debug(f"Temperature: 0.0")
+        logger.debug(f"Max tokens: 32000")
         
         strategy = LLMExtractionStrategy(
             llm_config=LLMConfig(
@@ -757,8 +902,8 @@ Target 3000-6000 words total with sections separated by ###SECTION_BREAK###. Out
                 "max_tokens": 32000
             }
         )
-        
-        print(f"    ✅ Extraction strategy created successfully")
+
+        logger.debug(f"Extraction strategy created successfully")
         return strategy
     
     async def process_crawled_content(self, content_data: dict, url: str, processing_mode: ProcessingMode = None) -> Tuple[bool, str]:
@@ -767,14 +912,14 @@ Target 3000-6000 words total with sections separated by ###SECTION_BREAK###. Out
         """
         try:
             description = content_data.get('description', '')
-            
+
             # Display the processing mode that was already determined (no re-analysis)
             if self.enable_dual_mode and processing_mode:
-                print(f"  📋 Using processing mode: {processing_mode.value} (determined during extraction)")
+                logger.info(f"  📋 Using processing mode: {processing_mode.value} (determined during extraction)")
             elif self.enable_dual_mode:
-                print(f"  ⚠️  No processing mode provided, will use default for push")
+                logger.warning(f"  ⚠️  No processing mode provided, will use default for push")
             else:
-                print(f"  📋 Legacy mode: {'parent-child' if self.use_parent_child else 'flat'} chunking")
+                logger.info(f"  📋 Legacy mode: {'parent-child' if self.use_parent_child else 'flat'} chunking")
             
             # Handle knowledge base selection based on mode
             if self.knowledge_base_mode == 'manual' and self.selected_knowledge_base:
@@ -791,37 +936,37 @@ Target 3000-6000 words total with sections separated by ###SECTION_BREAK###. Out
                 if not kb_name:
                     # Try to get KB name from API
                     kb_name = f"Knowledge Base {kb_id}"
-                
-                print(f"  📂 Using manually selected knowledge base: {kb_name}")
-                
+
+                logger.info(f"  📂 Using manually selected knowledge base: {kb_name}")
+
                 # Manual mode - no categorization needed
-                
+
             else:
                 # Automatic mode: use smart categorization
                 category = await self.categorize_content(description, url)
-                
-                print(f"  📂 Category: {category}")
-                
+
+                logger.info(f"  📂 Category: {category}")
+
                 # Ensure knowledge base exists
                 kb_id = await self.ensure_knowledge_base_exists(category)
                 if not kb_id:
-                    print(f"❌ Could not create or find knowledge base for category '{category}', trying fallback...")
+                    logger.error(f"❌ Could not create or find knowledge base for category '{category}', trying fallback...")
                     # Try to create a generic fallback knowledge base
                     fallback_kb_id = await self.ensure_knowledge_base_exists("general")
                     if not fallback_kb_id:
-                        print(f"❌ Even fallback knowledge base failed, skipping content")
+                        logger.error(f"❌ Even fallback knowledge base failed, skipping content")
                         return False, "failed_kb_creation"
                     kb_id = fallback_kb_id
-                    print(f"✅ Using fallback knowledge base: general (ID: {kb_id})")
+                    logger.info(f"✅ Using fallback knowledge base: general (ID: {kb_id})")
             
             # Push content to knowledge base with duplicate detection and mode
             success, status = await self.push_to_knowledge_base(kb_id, content_data, url, processing_mode)
             
             
             return success, status
-            
+
         except Exception as e:
-            print(f"❌ Error processing content: {e}")
+            logger.error(f"❌ Error processing content: {e}")
             return False, "error"
     
     async def crawl_and_process(self, url: str, max_pages: int = 10, max_depth: int = 1, extraction_model: str = "gemini/gemini-2.0-flash-exp"):
@@ -842,13 +987,13 @@ Target 3000-6000 words total with sections separated by ###SECTION_BREAK###. Out
         if not self._initialized:
             await self.initialize()
         else:
-            print("📋 Using cached knowledge bases from previous initialization")
-        
+            logger.info("📋 Using cached knowledge bases from previous initialization")
+
         # Preload all documents for efficient duplicate checking
         await self.preload_all_documents()
-        
+
         if not self.gemini_api_key:
-            print("Warning: No GEMINI_API_KEY provided. Set GEMINI_API_KEY environment variable")
+            logger.warning("No GEMINI_API_KEY provided. Set GEMINI_API_KEY environment variable")
             return
         
         # Configure browser settings (keeping original logic)
@@ -858,33 +1003,33 @@ Target 3000-6000 words total with sections separated by ###SECTION_BREAK###. Out
         )
         
         # Print model configuration
-        print(f"🧠 Using models:")
-        print(f"  📝 Naming: {self.naming_model} (fast)")
-        print(f"  🔍 Extraction: {extraction_model} (smart)")
+        logger.info(f"🧠 Using models:")
+        logger.info(f"  📝 Naming: {self.naming_model} (fast)")
+        logger.info(f"  🔍 Extraction: {extraction_model} (smart)")
         if self.enable_dual_mode:
             if self.use_intelligent_mode:
-                print(f"  🤖 Intelligent mode enabled: Using LLM for content analysis")
-                print(f"     📊 Analysis model: {self.content_processor.analyzer.analysis_model}")
-                print(f"     🔍 Content value assessment (high/medium/low/skip)")
-                print(f"     📄 Single topic/tutorial/profile → Full Doc Mode")
-                print(f"     📚 Multi-topic/mixed content → Paragraph Mode")
-                print(f"     ⏭️  Low-value pages will be skipped")
+                logger.info(f"  🤖 Intelligent mode enabled: Using LLM for content analysis")
+                logger.info(f"     📊 Analysis model: {self.content_processor.analyzer.analysis_model}")
+                logger.info(f"     🔍 Content value assessment (high/medium/low/skip)")
+                logger.info(f"     📄 Single topic/tutorial/profile → Full Doc Mode")
+                logger.info(f"     📚 Multi-topic/mixed content → Paragraph Mode")
+                logger.info(f"     ⏭️  Low-value pages will be skipped")
             elif self.content_processor.use_word_threshold:
-                print(f"  🔀 Dual-mode enabled: Using WORD count threshold")
-                print(f"     📊 Threshold: {self.content_processor.word_threshold} words")
-                print(f"     📄 ≤ {self.content_processor.word_threshold} words → Full Doc Mode (sections)")
-                print(f"     📚 > {self.content_processor.word_threshold} words → Paragraph Mode (parent-child)")
+                logger.info(f"  🔀 Dual-mode enabled: Using WORD count threshold")
+                logger.info(f"     📊 Threshold: {self.content_processor.word_threshold} words")
+                logger.info(f"     📄 ≤ {self.content_processor.word_threshold} words → Full Doc Mode (sections)")
+                logger.info(f"     📚 > {self.content_processor.word_threshold} words → Paragraph Mode (parent-child)")
             else:
-                print(f"  🔀 Dual-mode enabled: Using TOKEN count threshold")
-                print(f"     🎯 Threshold: {self.content_processor.token_threshold} tokens")
-                print(f"     📄 ≤ {self.content_processor.token_threshold} tokens → Full Doc Mode (sections)")
-                print(f"     📚 > {self.content_processor.token_threshold} tokens → Paragraph Mode (parent-child)")
+                logger.info(f"  🔀 Dual-mode enabled: Using TOKEN count threshold")
+                logger.info(f"     🎯 Threshold: {self.content_processor.token_threshold} tokens")
+                logger.info(f"     📄 ≤ {self.content_processor.token_threshold} tokens → Full Doc Mode (sections)")
+                logger.info(f"     📚 > {self.content_processor.token_threshold} tokens → Paragraph Mode (parent-child)")
         else:
-            print(f"  📄 Single mode: Using {'parent-child' if self.use_parent_child else 'flat'} chunking")
+            logger.info(f"  📄 Single mode: Using {'parent-child' if self.use_parent_child else 'flat'} chunking")
         
         # First, collect URLs without extraction to check for duplicates
-        print("\n🔍 Phase 1: Collecting URLs and checking for duplicates...")
-        
+        logger.info("\n🔍 Phase 1: Collecting URLs and checking for duplicates...")
+
         # Display knowledge base mode
         if self.knowledge_base_mode == 'manual' and self.selected_knowledge_base:
             kb_name = None
@@ -893,9 +1038,9 @@ Target 3000-6000 words total with sections separated by ###SECTION_BREAK###. Out
                     kb_name = name
                     break
             kb_display = kb_name or f"ID: {self.selected_knowledge_base}"
-            print(f"📚 Knowledge Base Mode: Manual - All content will be pushed to '{kb_display}'")
+            logger.info(f"📚 Knowledge Base Mode: Manual - All content will be pushed to '{kb_display}'")
         else:
-            print(f"🤖 Knowledge Base Mode: Automatic - Content will be categorized intelligently")
+            logger.info(f"🤖 Knowledge Base Mode: Automatic - Content will be categorized intelligently")
         
         # Configure URL collection (no extraction)
         url_collection_config = CrawlerRunConfig(
@@ -917,9 +1062,9 @@ Target 3000-6000 words total with sections separated by ###SECTION_BREAK###. Out
         duplicate_urls = []
         
         async with AsyncWebCrawler(config=browser_config) as crawler:
-            print(f"🚀 Starting intelligent crawl workflow from: {url}")
-            print("📋 Configuration: Check Duplicates → Extract New → Organize in Knowledge Base")
-            print("-" * 80)
+            logger.info(f"🚀 Starting intelligent crawl workflow from: {url}")
+            logger.info("📋 Configuration: Check Duplicates → Extract New → Organize in Knowledge Base")
+            logger.info("-" * 80)
             
             # First pass: collect URLs
             result_stream = await crawler.arun(url=url, config=url_collection_config)
@@ -940,30 +1085,30 @@ Target 3000-6000 words total with sections separated by ###SECTION_BREAK###. Out
                             
                             if exists:
                                 duplicate_urls.append(page_result.url)
-                                print(f"⏭️  [Page {crawled_count}] {page_result.url}")
-                                print(f"    Already exists as: '{doc_name}' in KB: {kb_id}")
+                                logger.info(f"⏭️  [Page {crawled_count}] {page_result.url}")
+                                logger.info(f"    Already exists as: '{doc_name}' in KB: {kb_id}")
                             else:
                                 urls_to_process.append(page_result.url)
-                                print(f"✅ [Page {crawled_count}] {page_result.url}")
-                                print(f"    Will be saved as: '{doc_name}' - New URL to process")
-                        
-                        
+                                logger.info(f"✅ [Page {crawled_count}] {page_result.url}")
+                                logger.info(f"    Will be saved as: '{doc_name}' - New URL to process")
+
+
             except Exception as e:
-                print(f"\nError during URL collection: {e}")
-            
+                logger.error(f"\nError during URL collection: {e}")
+
             # Phase 1 Summary
-            print(f"\n📄 Phase 1 Complete:")
-            print(f"  Total URLs found: {crawled_count}")
-            print(f"  Duplicate URLs skipped: {len(duplicate_urls)}")
-            print(f"  New URLs to process: {len(urls_to_process)}")
-            
+            logger.info(f"\n📄 Phase 1 Complete:")
+            logger.info(f"  Total URLs found: {crawled_count}")
+            logger.info(f"  Duplicate URLs skipped: {len(duplicate_urls)}")
+            logger.info(f"  New URLs to process: {len(urls_to_process)}")
+
             if not urls_to_process:
-                print("\n✅ All URLs already exist in knowledge base. No new content to extract!")
+                logger.info("\n✅ All URLs already exist in knowledge base. No new content to extract!")
                 return
-            
+
             # Phase 2: Extract content only for new URLs
-            print(f"\n🔍 Phase 2: Extracting content for {len(urls_to_process)} new URLs...")
-            print("-" * 80)
+            logger.info(f"\n🔍 Phase 2: Extracting content for {len(urls_to_process)} new URLs...")
+            logger.info("-" * 80)
             
             extracted_files = []
             workflow_results = []
@@ -974,119 +1119,119 @@ Target 3000-6000 words total with sections separated by ###SECTION_BREAK###. Out
             
             # Process each new URL
             for idx, process_url in enumerate(urls_to_process, 1):
-                print(f"\n[{idx}/{len(urls_to_process)}] Processing: {process_url}")
-                
+                logger.info(f"\n[{idx}/{len(urls_to_process)}] Processing: {process_url}")
+
                 retry_count = 0
                 max_retries = 2
                 extraction_successful = False
-                
+
                 while retry_count <= max_retries and not extraction_successful:
                     try:
                         if retry_count > 0:
-                            print(f"  🔄 Retry attempt {retry_count}/{max_retries}...")
+                            logger.info(f"  🔄 Retry attempt {retry_count}/{max_retries}...")
                             await asyncio.sleep(2)  # Brief delay before retry
-                        
+
                         # First, get the raw content to analyze its length if dual mode is enabled
                         if self.enable_dual_mode:
-                            print(f"  🔍 Dual-mode enabled: Getting raw content for analysis...")
+                            logger.info(f"  🔍 Dual-mode enabled: Getting raw content for analysis...")
                             # Get content without extraction first
                             raw_config = CrawlerRunConfig(
                                 extraction_strategy=None,
                                 cache_mode=CacheMode.BYPASS
                             )
                             raw_result = await crawler.arun(url=process_url, config=raw_config)
-                            
-                            print(f"  📄 Raw crawl result:")
-                            print(f"    Success: {raw_result.success}")
-                            print(f"    Has markdown: {bool(getattr(raw_result, 'markdown', None))}")
-                            print(f"    Markdown length: {len(getattr(raw_result, 'markdown', '')) if getattr(raw_result, 'markdown', None) else 0}")
-                            
+
+                            logger.info(f"  📄 Raw crawl result:")
+                            logger.info(f"    Success: {raw_result.success}")
+                            logger.info(f"    Has markdown: {bool(getattr(raw_result, 'markdown', None))}")
+                            logger.info(f"    Markdown length: {len(getattr(raw_result, 'markdown', '')) if getattr(raw_result, 'markdown', None) else 0}")
+
                             if raw_result.success and raw_result.markdown:
                                 # Determine processing mode based on content
-                                print(f"  🔍 Mode selection process:")
+                                logger.info(f"  🔍 Mode selection process:")
                                 
                                 # Check for manual mode first
                                 if self.manual_mode:
                                     if self.manual_mode == 'full_doc':
                                         processing_mode = ProcessingMode.FULL_DOC
-                                        print(f"  ✋ Manual mode: FULL DOC")
+                                        logger.info(f"  ✋ Manual mode: FULL DOC")
                                     else:
                                         processing_mode = ProcessingMode.PARAGRAPH
-                                        print(f"  ✋ Manual mode: PARAGRAPH")
+                                        logger.info(f"  ✋ Manual mode: PARAGRAPH")
                                     mode_analysis = {'manual_mode': True, 'selection_reason': f'Manual override: {self.manual_mode}'}
                                 # Use intelligent mode if enabled
                                 elif self.use_intelligent_mode:
                                     try:
-                                        print(f"  🤖 Running intelligent content analysis...")
+                                        logger.info(f"  🤖 Running intelligent content analysis...")
                                         processing_mode, mode_analysis = await self.content_processor.determine_processing_mode_intelligent(
                                             raw_result.markdown, process_url
                                         )
-                                        
+
                                         # Check if we should skip this page
                                         if mode_analysis.get('skip', False):
-                                            print(f"  ⏭️  Skipping page: {mode_analysis.get('skip_reason', 'Low value content')}")
-                                            print(f"     Content value: {mode_analysis.get('content_value', 'low')}")
+                                            logger.info(f"  ⏭️  Skipping page: {mode_analysis.get('skip_reason', 'Low value content')}")
+                                            logger.info(f"     Content value: {mode_analysis.get('content_value', 'low')}")
                                             continue  # Skip to next URL
-                                        
-                                        print(f"  📊 Intelligent analysis results:")
-                                        print(f"     🎯 Content value: {mode_analysis.get('content_value', 'unknown')}")
-                                        print(f"     📋 Structure: {mode_analysis.get('content_structure', 'unknown')}")
-                                        print(f"     📝 Type: {mode_analysis.get('content_type', 'unknown')}")
-                                        print(f"     🔍 Main topics: {', '.join(mode_analysis.get('main_topics', []))}")
-                                        print(f"  📄 Selected mode: {processing_mode.value}")
+
+                                        logger.info(f"  📊 Intelligent analysis results:")
+                                        logger.info(f"     🎯 Content value: {mode_analysis.get('content_value', 'unknown')}")
+                                        logger.info(f"     📋 Structure: {mode_analysis.get('content_structure', 'unknown')}")
+                                        logger.info(f"     📝 Type: {mode_analysis.get('content_type', 'unknown')}")
+                                        logger.info(f"     🔍 Main topics: {', '.join(mode_analysis.get('main_topics', []))}")
+                                        logger.info(f"  📄 Selected mode: {processing_mode.value}")
                                         # Show the AI's reasoning if available, otherwise show selection reason
                                         reason = mode_analysis.get('mode_reason') or mode_analysis.get('selection_reason', '')
                                         if reason:
-                                            print(f"     ℹ️  {reason}")
+                                            logger.info(f"     ℹ️  {reason}")
                                         
                                     except Exception as e:
-                                        print(f"  ⚠️  Intelligent analysis failed: {e}")
-                                        print(f"  🔄 Falling back to threshold-based mode selection...")
+                                        logger.warning(f"  ⚠️  Intelligent analysis failed: {e}")
+                                        logger.info(f"  🔄 Falling back to threshold-based mode selection...")
                                         # Fall back to regular mode selection
                                         url_suggests_full_doc = self.content_processor.should_use_full_doc_for_url(process_url)
                                         if url_suggests_full_doc:
                                             processing_mode = ProcessingMode.FULL_DOC
-                                            print(f"  📄 URL pattern suggests full doc mode")
+                                            logger.info(f"  📄 URL pattern suggests full doc mode")
                                         else:
                                             processing_mode, mode_analysis = self.content_processor.determine_processing_mode(raw_result.markdown)
-                                            print(f"  📊 Threshold-based analysis:")
-                                            print(f"     📝 Word count: {mode_analysis.get('word_count', 0):,} words")
-                                            print(f"     🎯 Token count: {mode_analysis.get('token_count', 0):,} tokens")
-                                            print(f"  📄 Selected mode: {processing_mode.value}")
-                                            print(f"     ℹ️  {mode_analysis.get('selection_reason', '')}")
+                                            logger.info(f"  📊 Threshold-based analysis:")
+                                            logger.info(f"     📝 Word count: {mode_analysis.get('word_count', 0):,} words")
+                                            logger.info(f"     🎯 Token count: {mode_analysis.get('token_count', 0):,} tokens")
+                                            logger.info(f"  📄 Selected mode: {processing_mode.value}")
+                                            logger.info(f"     ℹ️  {mode_analysis.get('selection_reason', '')}")
                                 else:
                                     # Regular threshold-based mode selection
                                     url_suggests_full_doc = self.content_processor.should_use_full_doc_for_url(process_url)
-                                    print(f"    URL suggests full doc: {url_suggests_full_doc}")
-                                    
+                                    logger.info(f"    URL suggests full doc: {url_suggests_full_doc}")
+
                                     if url_suggests_full_doc:
                                         processing_mode = ProcessingMode.FULL_DOC
-                                        print(f"  📄 URL pattern suggests full doc mode")
-                                        print(f"    Final selected mode: {processing_mode.value}")
+                                        logger.info(f"  📄 URL pattern suggests full doc mode")
+                                        logger.info(f"    Final selected mode: {processing_mode.value}")
                                     else:
                                         processing_mode, mode_analysis = self.content_processor.determine_processing_mode(raw_result.markdown)
-                                        print(f"  📊 Content analysis:")
-                                        print(f"     📝 Word count: {mode_analysis.get('word_count', 0):,} words")
-                                        print(f"     🎯 Token count: {mode_analysis.get('token_count', 0):,} tokens")
-                                        print(f"     📏 Using {mode_analysis.get('threshold_type', 'word')} threshold")
-                                        print(f"     🔍 Decision: {mode_analysis.get('decision', '')}")
-                                        print(f"  📄 Selected mode: {processing_mode.value}")
-                                        print(f"     ℹ️  {mode_analysis.get('selection_reason', '')}")
-                                
+                                        logger.info(f"  📊 Content analysis:")
+                                        logger.info(f"     📝 Word count: {mode_analysis.get('word_count', 0):,} words")
+                                        logger.info(f"     🎯 Token count: {mode_analysis.get('token_count', 0):,} tokens")
+                                        logger.info(f"     📏 Using {mode_analysis.get('threshold_type', 'word')} threshold")
+                                        logger.info(f"     🔍 Decision: {mode_analysis.get('decision', '')}")
+                                        logger.info(f"  📄 Selected mode: {processing_mode.value}")
+                                        logger.info(f"     ℹ️  {mode_analysis.get('selection_reason', '')}")
+
                                 # Create appropriate extraction strategy
-                                print(f"  🛠️  Creating extraction strategy for {processing_mode.value} mode...")
+                                logger.info(f"  🛠️  Creating extraction strategy for {processing_mode.value} mode...")
                                 extraction_strategy = self.create_extraction_strategy(processing_mode, extraction_model)
                                 extraction_config = CrawlerRunConfig(
                                     extraction_strategy=extraction_strategy,
                                     cache_mode=CacheMode.BYPASS
                                 )
                             else:
-                                print(f"  ⚠️  Failed to get raw content for analysis")
-                                print(f"    Raw result success: {raw_result.success}")
-                                print(f"    Raw result markdown: {bool(getattr(raw_result, 'markdown', None))}")
+                                logger.warning(f"  ⚠️  Failed to get raw content for analysis")
+                                logger.info(f"    Raw result success: {raw_result.success}")
+                                logger.info(f"    Raw result markdown: {bool(getattr(raw_result, 'markdown', None))}")
                                 if hasattr(raw_result, 'error_message'):
-                                    print(f"    Error: {raw_result.error_message}")
-                                print(f"    Using default mode...")
+                                    logger.error(f"    Error: {raw_result.error_message}")
+                                logger.info(f"    Using default mode...")
                                 # Fall back to default strategy
                                 processing_mode = ProcessingMode.PARAGRAPH if self.use_parent_child else None
                                 extraction_strategy = self.create_extraction_strategy(processing_mode, extraction_model)
@@ -1105,76 +1250,76 @@ Target 3000-6000 words total with sections separated by ###SECTION_BREAK###. Out
                         
                         # Now extract with the appropriate strategy
                         result = await crawler.arun(url=process_url, config=extraction_config)
-                        
+
                         # Enhanced logging for debugging
-                        print(f"  🔍 Crawl result details:")
-                        print(f"    Success: {result.success}")
-                        print(f"    Has extracted_content: {bool(result.extracted_content)}")
-                        print(f"    Has markdown: {bool(getattr(result, 'markdown', None))}")
-                        print(f"    Has cleaned_html: {bool(getattr(result, 'cleaned_html', None))}")
-                        
+                        logger.info(f"  🔍 Crawl result details:")
+                        logger.info(f"    Success: {result.success}")
+                        logger.info(f"    Has extracted_content: {bool(result.extracted_content)}")
+                        logger.info(f"    Has markdown: {bool(getattr(result, 'markdown', None))}")
+                        logger.info(f"    Has cleaned_html: {bool(getattr(result, 'cleaned_html', None))}")
+
                         if hasattr(result, 'error_message') and result.error_message:
-                            print(f"    Error message: {result.error_message}")
-                        
+                            logger.error(f"    Error message: {result.error_message}")
+
                         if result.extracted_content:
-                            print(f"    Extracted content type: {type(result.extracted_content)}")
+                            logger.info(f"    Extracted content type: {type(result.extracted_content)}")
                             if isinstance(result.extracted_content, str):
-                                print(f"    Extracted content length: {len(result.extracted_content)} chars")
-                                print(f"    Extracted content preview: {result.extracted_content[:200]}...")
+                                logger.info(f"    Extracted content length: {len(result.extracted_content)} chars")
+                                logger.info(f"    Extracted content preview: {result.extracted_content[:200]}...")
                             else:
-                                print(f"    Extracted content: {result.extracted_content}")
+                                logger.info(f"    Extracted content: {result.extracted_content}")
                         
                         if result.success and result.extracted_content:
                             # Parse extracted data with enhanced error handling
                             try:
                                 if isinstance(result.extracted_content, str):
-                                    print(f"  📝 Parsing JSON string...")
+                                    logger.info(f"  📝 Parsing JSON string...")
                                     extracted_data = json.loads(result.extracted_content)
                                 else:
-                                    print(f"  📝 Using direct extracted content...")
+                                    logger.info(f"  📝 Using direct extracted content...")
                                     extracted_data = result.extracted_content
-                                
-                                print(f"  📊 Parsed data type: {type(extracted_data)}")
-                                
+
+                                logger.info(f"  📊 Parsed data type: {type(extracted_data)}")
+
                                 if isinstance(extracted_data, list):
-                                    print(f"  📋 List with {len(extracted_data)} items")
+                                    logger.info(f"  📋 List with {len(extracted_data)} items")
                                     extracted_data = extracted_data[0] if extracted_data else {}
-                                
-                                print(f"  🔑 Final data keys: {list(extracted_data.keys()) if isinstance(extracted_data, dict) else 'Not a dict'}")
+
+                                logger.info(f"  🔑 Final data keys: {list(extracted_data.keys()) if isinstance(extracted_data, dict) else 'Not a dict'}")
                                 
                                 if extracted_data and extracted_data.get('description'):
-                                    print(f"  ✅ Valid description found: {len(extracted_data.get('description', ''))} chars")
+                                    logger.info(f"  ✅ Valid description found: {len(extracted_data.get('description', ''))} chars")
                                     # Save JSON
                                     url_filename = process_url.replace("https://", "").replace("http://", "")
                                     url_filename = url_filename.replace("/", "_").replace("?", "_").replace(":", "_")
                                     if len(url_filename) > 100:
                                         url_filename = url_filename[:100]
-                                    
+
                                     json_file = Path(output_dir) / f"{url_filename}.json"
                                     with open(json_file, "w", encoding="utf-8") as f:
                                         json.dump(extracted_data, f, indent=2, ensure_ascii=False)
-                                    
+
                                     extracted_files.append(str(json_file))
-                                    print(f"  💾 Saved: {json_file}")
-                                    
+                                    logger.info(f"  💾 Saved: {json_file}")
+
                                     # Display summary
-                                    print(f"  📄 Title: {extracted_data.get('title', 'N/A')}")
+                                    logger.info(f"  📄 Title: {extracted_data.get('title', 'N/A')}")
                                     desc = extracted_data.get('description', '')
                                     desc_length = len(desc)
                                     # Display summary based on actual content structure
                                     if '###PARENT_SECTION###' in desc:
                                         parent_count = desc.count('###PARENT_SECTION###')
                                         child_count = desc.count('###CHILD_SECTION###')
-                                        print(f"  📝 Description: {desc_length} characters in {parent_count} parent chunks with {child_count} child chunks")
+                                        logger.info(f"  📝 Description: {desc_length} characters in {parent_count} parent chunks with {child_count} child chunks")
                                     elif '###SECTION###' in desc:
                                         section_count = desc.count('###SECTION###')
-                                        print(f"  📝 Description: {desc_length} characters in {section_count} sections (full doc mode)")
+                                        logger.info(f"  📝 Description: {desc_length} characters in {section_count} sections (full doc mode)")
                                     elif '###SECTION_BREAK###' in desc:
                                         chunk_count = desc.count('###SECTION_BREAK###') + 1
-                                        print(f"  📝 Description: {desc_length} characters in {chunk_count} chunks")
+                                        logger.info(f"  📝 Description: {desc_length} characters in {chunk_count} chunks")
                                     else:
                                         # No recognized markers
-                                        print(f"  📝 Description: {desc_length} characters")
+                                        logger.info(f"  📝 Description: {desc_length} characters")
                                     
                                     # Process through workflow (pass the processing mode that was determined)
                                     workflow_success, status = await self.process_crawled_content(
@@ -1191,25 +1336,25 @@ Target 3000-6000 words total with sections separated by ###SECTION_BREAK###. Out
                                     
                                     extraction_successful = True
                                 else:
-                                    print(f"  ⚠️  No valid content extracted")
-                                    print(f"    Reason: Missing description field or empty data")
-                                    print(f"    Data structure: {extracted_data}")
+                                    logger.warning(f"  ⚠️  No valid content extracted")
+                                    logger.info(f"    Reason: Missing description field or empty data")
+                                    logger.info(f"    Data structure: {extracted_data}")
                                     if retry_count < max_retries:
                                         retry_count += 1
                                     else:
                                         extraction_failures += 1
                                         break
-                            
+
                             except json.JSONDecodeError as e:
-                                print(f"  ❌ JSON parsing error: {e}")
-                                print(f"    Raw content: {result.extracted_content[:500]}...")
+                                logger.error(f"  ❌ JSON parsing error: {e}")
+                                logger.error(f"    Raw content: {result.extracted_content[:500]}...")
                                 if retry_count < max_retries:
                                     retry_count += 1
                                 else:
                                     extraction_failures += 1
                                     break
                             except Exception as e:
-                                print(f"  ❌ Extraction parsing error: {e}")
+                                logger.error(f"  ❌ Extraction parsing error: {e}")
                                 import traceback
                                 traceback.print_exc()
                                 if retry_count < max_retries:
@@ -1218,15 +1363,15 @@ Target 3000-6000 words total with sections separated by ###SECTION_BREAK###. Out
                                     extraction_failures += 1
                                     break
                         else:
-                            print(f"  ⚠️  Extraction failed: {result.error_message if hasattr(result, 'error_message') else 'Unknown error'}")
+                            logger.warning(f"  ⚠️  Extraction failed: {result.error_message if hasattr(result, 'error_message') else 'Unknown error'}")
                             if retry_count < max_retries:
                                 retry_count += 1
                             else:
                                 extraction_failures += 1
                                 break
-                                
+
                     except Exception as e:
-                        print(f"  ❌ Error: {e}")
+                        logger.error(f"  ❌ Error: {e}")
                         if retry_count < max_retries:
                             retry_count += 1
                         else:
@@ -1234,34 +1379,34 @@ Target 3000-6000 words total with sections separated by ###SECTION_BREAK###. Out
                             break
             
             # Final summary
-            print("\n" + "=" * 80)
-            print("🎯 INTELLIGENT CRAWL WORKFLOW SUMMARY")
-            print("=" * 80)
-            print(f"Total URLs discovered: {crawled_count}")
-            print(f"Duplicate URLs skipped (saved tokens): {len(duplicate_urls)}")
-            print(f"New URLs processed: {len(urls_to_process)}")
-            print(f"Extraction failures: {extraction_failures}")
-            print(f"Total documents saved: {len(extracted_files)}")
-            
+            logger.info("\n" + "=" * 80)
+            logger.info("🎯 INTELLIGENT CRAWL WORKFLOW SUMMARY")
+            logger.info("=" * 80)
+            logger.info(f"Total URLs discovered: {crawled_count}")
+            logger.info(f"Duplicate URLs skipped (saved tokens): {len(duplicate_urls)}")
+            logger.info(f"New URLs processed: {len(urls_to_process)}")
+            logger.info(f"Extraction failures: {extraction_failures}")
+            logger.info(f"Total documents saved: {len(extracted_files)}")
+
             if workflow_results:
                 successful = sum(1 for r in workflow_results if r['success'])
                 created_new = sum(1 for r in workflow_results if r.get('status') == 'created_new')
                 skipped_existing = sum(1 for r in workflow_results if r.get('status') == 'skipped_existing')
                 failed = sum(1 for r in workflow_results if not r['success'])
-                
-                print(f"Knowledge base operations: {successful}/{len(workflow_results)} successful")
-                print(f"  ✅ New documents created: {created_new}")
-                print(f"  ⏭️  Existing documents skipped: {skipped_existing}")
-                print(f"  ❌ Failed operations: {failed}")
-                
+
+                logger.info(f"Knowledge base operations: {successful}/{len(workflow_results)} successful")
+                logger.info(f"  ✅ New documents created: {created_new}")
+                logger.info(f"  ⏭️  Existing documents skipped: {skipped_existing}")
+                logger.info(f"  ❌ Failed operations: {failed}")
+
                 # Show knowledge bases created/used
-                print(f"\n📚 Knowledge bases: {len(self.knowledge_bases)}")
+                logger.info(f"\n📚 Knowledge bases: {len(self.knowledge_bases)}")
                 for name, kb_id in self.knowledge_bases.items():
-                    print(f"  • {name} (ID: {kb_id})")
-                
+                    logger.info(f"  • {name} (ID: {kb_id})")
+
                 # Show documents cached
                 total_docs_cached = sum(len(docs) for docs in self.document_cache.values())
-                print(f"\n📄 Total documents tracked: {total_docs_cached}")
+                logger.info(f"\n📄 Total documents tracked: {total_docs_cached}")
             
             # Note: Token usage tracking would need to aggregate across multiple strategies in dual mode
 
@@ -1273,8 +1418,8 @@ async def main():
     
     # Initialize workflow with dual-model and dual-mode configuration
     workflow = CrawlWorkflow(
-        dify_base_url="http://localhost:8088",
-        dify_api_key="dataset-VoYPMEaQ8L1udk2F6oek99XK",  # Replace with your API key
+        dify_base_url=os.getenv('DIFY_BASE_URL', 'http://localhost:8088'),
+        dify_api_key=os.getenv('DIFY_API_KEY'),
         gemini_api_key=os.getenv('GEMINI_API_KEY'),
         enable_dual_mode=True,  # Enable automatic mode selection based on content length
         word_threshold=4000,    # Switch to full doc mode for content under 4000 words

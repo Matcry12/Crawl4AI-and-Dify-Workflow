@@ -1,14 +1,23 @@
-import tiktoken
 from typing import Dict, Tuple, Optional, List
 from enum import Enum
 from intelligent_content_analyzer import IntelligentContentAnalyzer, ContentValue, ContentStructure
+import logging
+
+# Try to import tiktoken, but make it optional
+try:
+    import tiktoken
+    TIKTOKEN_AVAILABLE = True
+except ImportError:
+    TIKTOKEN_AVAILABLE = False
+
+logger = logging.getLogger(__name__)
 
 class ProcessingMode(Enum):
     PARAGRAPH = "paragraph"  # Parent-child hierarchical mode for long content
     FULL_DOC = "full_doc"    # Full document mode for shorter content
-    
+
 class ContentProcessor:
-    def __init__(self, 
+    def __init__(self,
                  word_threshold: int = 4000,  # Default word count threshold for mode selection
                  token_threshold: int = 8000,  # Default token count threshold (optional)
                  use_word_threshold: bool = True,  # Toggle between word/token threshold
@@ -23,7 +32,7 @@ class ContentProcessor:
                  full_doc_max_chunks: int = 5):
         """
         Initialize content processor with configurable thresholds.
-        
+
         Args:
             word_threshold: Word count threshold to decide between modes
             token_threshold: Token count threshold (used if use_word_threshold=False)
@@ -44,9 +53,24 @@ class ContentProcessor:
         self.paragraph_child_tokens = paragraph_child_tokens
         self.full_doc_chunk_tokens = full_doc_chunk_tokens
         self.full_doc_max_chunks = full_doc_max_chunks
-        
+
         # Initialize tokenizer (using cl100k_base which is used by GPT-4)
-        self.encoding = tiktoken.get_encoding("cl100k_base")
+        # Try to load encoding, fall back to word-based estimation if unavailable
+        if TIKTOKEN_AVAILABLE:
+            try:
+                self.encoding = tiktoken.get_encoding("cl100k_base")
+                self._use_tiktoken = True
+                logger.debug("Using tiktoken for accurate token counting")
+            except Exception as e:
+                logger.warning(f"Failed to load tiktoken encoding (network issue): {e}")
+                logger.warning("Falling back to word-based token estimation (1 token ≈ 0.75 words)")
+                self.encoding = None
+                self._use_tiktoken = False
+        else:
+            logger.info("tiktoken not installed - using word-based token estimation (1 token ≈ 0.75 words)")
+            logger.info("Install tiktoken for accurate token counting: pip install tiktoken")
+            self.encoding = None
+            self._use_tiktoken = False
         
         # Initialize intelligent analyzer if enabled
         if self.use_intelligent_mode:
@@ -62,8 +86,17 @@ class ContentProcessor:
             self.analyzer = None
     
     def count_tokens(self, text: str) -> int:
-        """Count tokens in the given text."""
-        return len(self.encoding.encode(text))
+        """Count tokens in the given text.
+
+        Falls back to word-based estimation if tiktoken is unavailable.
+        """
+        if self._use_tiktoken and self.encoding:
+            return len(self.encoding.encode(text))
+        else:
+            # Fallback: estimate tokens from word count
+            # GPT models roughly use 1 token per 0.75 words (4 chars per token)
+            word_count = len(text.split())
+            return int(word_count / 0.75)
     
     def analyze_content_length(self, content: str) -> Dict[str, any]:
         """

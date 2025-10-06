@@ -1,5 +1,6 @@
 import asyncio
 import os
+import logging
 from flask import Flask, render_template, request, jsonify, Response, stream_with_context
 from flask_cors import CORS
 import json
@@ -21,6 +22,38 @@ current_task = None
 task_lock = threading.Lock()
 cancel_event = threading.Event()
 current_loop = None
+
+# Custom logging handler to capture logs and send to UI
+class QueueHandler(logging.Handler):
+    """Custom logging handler that sends logs to the progress queue for UI display."""
+
+    def __init__(self, log_queue):
+        super().__init__()
+        self.log_queue = log_queue
+
+    def emit(self, record):
+        """Send log record to the queue."""
+        try:
+            # Format the log message
+            msg = self.format(record)
+
+            # Determine message type based on log level
+            if record.levelno >= logging.ERROR:
+                msg_type = 'error'
+            elif record.levelno >= logging.WARNING:
+                msg_type = 'warning'
+            else:
+                msg_type = 'log'
+
+            # Put in queue for UI
+            self.log_queue.put({
+                'type': msg_type,
+                'message': msg,
+                'level': record.levelname,
+                'timestamp': datetime.now().isoformat()
+            })
+        except Exception:
+            self.handleError(record)
 
 def run_async_crawl(url, max_pages, max_depth, api_key, base_url, llm_api_key, extraction_model, naming_model=None, knowledge_base_mode='automatic', selected_knowledge_base=None, enable_dual_mode=True, dual_mode_type='threshold', word_threshold=4000, use_intelligent_mode=False, intelligent_analysis_model='gemini/gemini-1.5-flash', manual_mode=None, custom_llm_base_url=None, custom_llm_api_key=None):
     """Run the async crawl in a separate thread with dual-model and dual-mode support."""
@@ -140,20 +173,22 @@ def run_async_crawl(url, max_pages, max_depth, api_key, base_url, llm_api_key, e
             custom_llm_base_url=custom_llm_base_url,
             custom_llm_api_key=custom_llm_api_key
         )
-        
-        # Monkey patch print to capture output
-        original_print = print
-        def custom_print(*args, **kwargs):
-            message = ' '.join(str(arg) for arg in args)
-            progress_queue.put({
-                'type': 'log',
-                'message': message,
-                'timestamp': datetime.now().isoformat()
-            })
-            original_print(*args, **kwargs)
-        
-        import builtins
-        builtins.print = custom_print
+
+        # Setup logging to capture logs and send to UI queue
+        workflow_logger = logging.getLogger('crawl_workflow')
+
+        # Create and configure queue handler
+        queue_handler = QueueHandler(progress_queue)
+        # Use simple format - just the message with emojis
+        queue_handler.setFormatter(logging.Formatter('%(message)s'))
+
+        # Remove any existing handlers and add our queue handler
+        workflow_logger.handlers.clear()
+        workflow_logger.addHandler(queue_handler)
+        workflow_logger.setLevel(logging.INFO)  # Set to INFO to show most logs
+
+        # Prevent propagation to root logger to avoid duplicates
+        workflow_logger.propagate = False
         
         # Check for cancellation periodically
         async def crawl_with_cancel_check():
@@ -198,8 +233,11 @@ def run_async_crawl(url, max_pages, max_depth, api_key, base_url, llm_api_key, e
             'timestamp': datetime.now().isoformat()
         })
     finally:
-        # Restore original print
-        builtins.print = original_print
+        # Clean up logging handlers and restore propagation
+        workflow_logger = logging.getLogger('crawl_workflow')
+        workflow_logger.handlers.clear()
+        workflow_logger.propagate = True  # Restore default propagation
+
         with task_lock:
             current_task = None
         loop.close()

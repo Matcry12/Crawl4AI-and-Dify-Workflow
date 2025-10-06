@@ -1,0 +1,69 @@
+EOS SMART CONTRACT QUESTIONS FOR DETAILED ANSWERS
+=================================================
+
+QUESTION 1: What is WebAssembly?
+EXPECTED KEY POINTS FROM JSON: WebAssembly is a binary instruction format for a stack-based virtual machine. It is designed as a portable target for compilation of high-level languages like C/C++/Rust, enabling deployment on the web for client and server applications.
+
+QUESTION 2: What is an ABI?
+EXPECTED KEY POINTS FROM JSON: ABI stands for Application Binary Interface. It is a file that describes the interface to your smart contract. It contains information about the functions that your smart contract exposes, and the parameters that they take. It also contains information about the data structures that your smart contract uses, and how they are stored in the blockchain. For instance, what tables are available, and what fields are in those tables.
+
+QUESTION 3: Explain smart contract building.
+EXPECTED KEY POINTS FROM JSON: When you build a smart contract, it will produce two files: mycontract.wasm (compiled WebAssembly code) and mycontract.abi (interface description).
+
+QUESTION 4: How do you deploy a smart contract?
+EXPECTED KEY POINTS FROM JSON: Click the deploy tab, then click Build & Deploy button. This deploys to Vaulta Jungle Testnet. If successful, you see "Deployed successfully!" If errors occur, they appear in console.
+
+QUESTION 5: Tell me about interacting with contracts.
+EXPECTED KEY POINTS FROM JSON: After deployment, sidebar shows: 1) Account contract was deployed to, 2) List of accounts to interact with contract, 3) Actions the contract exposes, 4) Tables the contract exposes. Fill fields for actions and click RUN. Click GET next to tables for JSON output.
+
+QUESTION 6: What happens during the build process?
+EXPECTED KEY POINTS FROM JSON: Click Build button in lower left corner. Console shows "Building project..." If build succeeds, zip, wasm, and abi files appear for download. If build fails, error message shows with line number.
+
+QUESTION 7: Describe the Vaulta Web IDE.
+EXPECTED KEY POINTS FROM JSON: It's an IDE for building and deploying smart contracts. Has Build button in lower left corner, deploy tab on left sidebar, console for messages, and shows contract interface after deployment.
+
+QUESTION 8: What files does a smart contract produce?
+EXPECTED KEY POINTS FROM JSON: Two main files: .wasm (compiled WebAssembly code that runs on blockchain) and .abi (describes contract interface, functions, parameters, data structures, tables).
+
+QUESTION 9: Explain the deployment process.
+EXPECTED KEY POINTS FROM JSON: Open deploy tab on leftmost sidebar, click Build & Deploy button, deploys to Vaulta Jungle Testnet, shows "Deployed successfully!" or error messages in console.
+
+QUESTION 10: What is a testnet?
+EXPECTED KEY POINTS FROM JSON: Vaulta Jungle Testnet is where contracts are deployed for testing. It allows interaction with contracts before mainnet deployment.
+
+=================================================
+OPEN-ENDED QUESTIONS THAT REQUIRE EXTENSIVE ANSWERS:
+
+QUESTION 11: How does blockchain technology work?
+HINT: LLM should explain decentralization, blocks, consensus, immutability, etc.
+
+QUESTION 12: Explain smart contracts in detail.
+HINT: LLM should cover definition, purpose, execution, benefits, use cases, etc.
+
+QUESTION 13: What are the differences between Web2 and Web3?
+HINT: LLM should discuss centralization vs decentralization, data ownership, trust models, etc.
+
+QUESTION 14: Describe the complete lifecycle of developing a dApp.
+HINT: LLM should cover planning, development, testing, deployment, maintenance, etc.
+
+QUESTION 15: What programming languages can create smart contracts and why?
+HINT: LLM should discuss C/C++/Rust compilation to WebAssembly, language features, etc.
+
+QUESTION 16: Explain blockchain security best practices.
+HINT: LLM should cover common vulnerabilities, auditing, testing, secure coding, etc.
+
+QUESTION 17: What are the components of a blockchain ecosystem?
+HINT: LLM should discuss nodes, consensus mechanisms, wallets, explorers, etc.
+
+QUESTION 18: How do smart contract upgrades work?
+HINT: LLM should explain immutability challenges, proxy patterns, migration strategies, etc.
+
+QUESTION 19: Describe different types of blockchain consensus mechanisms.
+HINT: LLM should cover PoW, PoS, DPoS, PBFT, and their trade-offs.
+
+QUESTION 20: What is the future of blockchain technology?
+HINT: LLM should discuss scalability solutions, interoperability, adoption trends, etc.
+
+=================================================
+NOTE: Questions 1-10 have specific answers from the JSON content.
+Questions 11-20 are designed to make the LLM provide comprehensive explanations.

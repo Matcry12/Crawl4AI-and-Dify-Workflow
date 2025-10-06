@@ -139,6 +139,35 @@ class DifyAPI:
         params = {"page": page, "limit": limit}
         return requests.get(url, headers=self.headers, params=params)
 
+    def get_metadata_list(self, dataset_id):
+        """Get metadata list for a knowledge base"""
+        url = f"{self.base_url}/v1/datasets/{dataset_id}/metadata"
+        return requests.get(url, headers=self.headers)
+
+    def delete_metadata(self, dataset_id, metadata_id):
+        """Delete a metadata field"""
+        url = f"{self.base_url}/v1/datasets/{dataset_id}/metadata/{metadata_id}"
+        return requests.delete(url, headers=self.headers)
+
+    def assign_document_metadata(self, dataset_id, document_id, metadata_list):
+        """Assign metadata to a document
+
+        Args:
+            dataset_id: ID of the knowledge base
+            document_id: ID of the document
+            metadata_list: List of metadata assignments [{"id": "...", "value": "...", "name": "..."}]
+        """
+        url = f"{self.base_url}/v1/datasets/{dataset_id}/documents/metadata"
+        data = {
+            "operation_data": [
+                {
+                    "document_id": document_id,
+                    "metadata_list": metadata_list
+                }
+            ]
+        }
+        return requests.post(url, headers=self.headers, json=data)
+
 
 # Example usage:
 if __name__ == "__main__":
