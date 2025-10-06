@@ -19,8 +19,9 @@ import re
 # Import the DifyAPI class
 import sys
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from tests.Test_dify import DifyAPI
+from dify_api_resilient import ResilientDifyAPI
 from content_processor import ContentProcessor, ProcessingMode
+from resilience_utils import CrawlCheckpoint, FailureQueue
 
 # Configure logging
 logging.basicConfig(
@@ -32,9 +33,9 @@ logger = logging.getLogger(__name__)
 
 
 class CrawlWorkflow:
-    def __init__(self, dify_base_url="http://localhost:8088", dify_api_key=None, gemini_api_key=None, use_parent_child=True, naming_model=None, knowledge_base_mode='automatic', selected_knowledge_base=None, enable_dual_mode=True, word_threshold=4000, token_threshold=8000, use_word_threshold=True, use_intelligent_mode=False, intelligent_analysis_model="gemini/gemini-1.5-flash", manual_mode=None, custom_llm_base_url=None, custom_llm_api_key=None):
+    def __init__(self, dify_base_url="http://localhost:8088", dify_api_key=None, gemini_api_key=None, use_parent_child=True, naming_model=None, knowledge_base_mode='automatic', selected_knowledge_base=None, enable_dual_mode=True, word_threshold=4000, token_threshold=8000, use_word_threshold=True, use_intelligent_mode=False, intelligent_analysis_model="gemini/gemini-1.5-flash", manual_mode=None, custom_llm_base_url=None, custom_llm_api_key=None, enable_resilience=True, checkpoint_file="crawl_checkpoint.json"):
         """Initialize the crawl workflow with API configurations.
-        
+
         Args:
             dify_base_url: Base URL for Dify API
             dify_api_key: API key for Dify
@@ -50,8 +51,16 @@ class CrawlWorkflow:
             use_word_threshold: If True, use word count; if False, use token count
             use_intelligent_mode: If True, use LLM to analyze content structure and value
             intelligent_analysis_model: Model to use for intelligent content analysis
+            enable_resilience: Enable retry logic and circuit breakers (default True)
+            checkpoint_file: Path to checkpoint file for crash recovery
         """
-        self.dify_api = DifyAPI(base_url=dify_base_url, api_key=dify_api_key)
+        # Use resilient Dify API with retry and circuit breaker
+        self.dify_api = ResilientDifyAPI(
+            base_url=dify_base_url,
+            api_key=dify_api_key,
+            enable_retry=enable_resilience,
+            enable_circuit_breaker=enable_resilience
+        )
         self.gemini_api_key = gemini_api_key or os.getenv('GEMINI_API_KEY')
         self.naming_model = naming_model or "gemini/gemini-1.5-flash"  # Default to fast model for naming
         self.knowledge_bases = {}  # Cache of existing knowledge bases
@@ -66,6 +75,12 @@ class CrawlWorkflow:
         self.manual_mode = manual_mode  # Manual selection: 'full_doc' or 'paragraph'
         self.custom_llm_base_url = custom_llm_base_url  # Custom LLM endpoint
         self.custom_llm_api_key = custom_llm_api_key  # Custom LLM API key
+
+        # Initialize resilience features
+        self.checkpoint = CrawlCheckpoint(checkpoint_file)
+        self.failure_queue = FailureQueue("failure_queue.json")
+        self.enable_resilience = enable_resilience
+        logger.info(f"🛡️  Resilience features {'enabled' if enable_resilience else 'disabled'}")
         
         # Initialize content processor for dual-mode handling
         self.content_processor = ContentProcessor(
@@ -989,6 +1004,19 @@ Target 3000-6000 words total with sections separated by ###SECTION_BREAK###. Out
         else:
             logger.info("📋 Using cached knowledge bases from previous initialization")
 
+        # Load checkpoint if exists (crash recovery)
+        if self.enable_resilience and self.checkpoint.load():
+            logger.info("🔄 RESUMING FROM CHECKPOINT")
+            logger.info(f"   Previously processed: {len(self.checkpoint.state['processed_urls'])} URLs")
+            logger.info(f"   Pending URLs: {len(self.checkpoint.state['pending_urls'])}")
+            stats = self.checkpoint.get_statistics()
+            logger.info(f"   Success: {stats['successful']}, Failed: {stats['failed']}, Skipped: {stats['skipped']}")
+        else:
+            # Initialize new checkpoint
+            if self.enable_resilience:
+                self.checkpoint.initialize(url, max_pages)
+                logger.info("📝 Checkpoint system initialized")
+
         # Preload all documents for efficient duplicate checking
         await self.preload_all_documents()
 
@@ -1080,15 +1108,26 @@ Target 3000-6000 words total with sections separated by ###SECTION_BREAK###. Out
                             break
                         
                         if page_result.success:
+                            # Check if URL already processed in checkpoint
+                            if self.enable_resilience and self.checkpoint.is_processed(page_result.url):
+                                duplicate_urls.append(page_result.url)
+                                logger.info(f"⏭️  [Page {crawled_count}] {page_result.url}")
+                                logger.info(f"    Already processed (from checkpoint)")
+                                continue
+
                             # Check if URL already exists in any knowledge base
                             exists, kb_id, doc_name = await self.check_url_exists(page_result.url)
-                            
+
                             if exists:
                                 duplicate_urls.append(page_result.url)
+                                if self.enable_resilience:
+                                    self.checkpoint.mark_skipped(page_result.url)
                                 logger.info(f"⏭️  [Page {crawled_count}] {page_result.url}")
                                 logger.info(f"    Already exists as: '{doc_name}' in KB: {kb_id}")
                             else:
                                 urls_to_process.append(page_result.url)
+                                if self.enable_resilience:
+                                    self.checkpoint.add_pending([page_result.url])
                                 logger.info(f"✅ [Page {crawled_count}] {page_result.url}")
                                 logger.info(f"    Will be saved as: '{doc_name}' - New URL to process")
 
@@ -1325,7 +1364,19 @@ Target 3000-6000 words total with sections separated by ###SECTION_BREAK###. Out
                                     workflow_success, status = await self.process_crawled_content(
                                         extracted_data, process_url, processing_mode
                                     )
-                                    
+
+                                    # Track in checkpoint and failure queue
+                                    if self.enable_resilience:
+                                        if workflow_success:
+                                            self.checkpoint.mark_processed(process_url, success=True)
+                                        else:
+                                            self.checkpoint.mark_failed(process_url, f"Workflow status: {status}")
+                                            self.failure_queue.add(process_url, f"Workflow failed: {status}")
+
+                                        # Save checkpoint every 5 URLs
+                                        if len(self.checkpoint.state['processed_urls']) % 5 == 0:
+                                            self.checkpoint.save()
+
                                     workflow_results.append({
                                         'url': process_url,
                                         'title': extracted_data.get('title', 'Untitled'),
@@ -1333,7 +1384,7 @@ Target 3000-6000 words total with sections separated by ###SECTION_BREAK###. Out
                                         'status': status,
                                         'category': await self.categorize_content(desc, process_url)
                                     })
-                                    
+
                                     extraction_successful = True
                                 else:
                                     logger.warning(f"  ⚠️  No valid content extracted")
@@ -1376,6 +1427,10 @@ Target 3000-6000 words total with sections separated by ###SECTION_BREAK###. Out
                             retry_count += 1
                         else:
                             extraction_failures += 1
+                            # Track extraction failure
+                            if self.enable_resilience:
+                                self.checkpoint.mark_failed(process_url, f"Extraction error: {str(e)}")
+                                self.failure_queue.add(process_url, f"Extraction failed after {max_retries} retries: {str(e)}")
                             break
             
             # Final summary
@@ -1407,7 +1462,34 @@ Target 3000-6000 words total with sections separated by ###SECTION_BREAK###. Out
                 # Show documents cached
                 total_docs_cached = sum(len(docs) for docs in self.document_cache.values())
                 logger.info(f"\n📄 Total documents tracked: {total_docs_cached}")
-            
+
+            # Save final checkpoint and export failure reports
+            if self.enable_resilience:
+                logger.info("\n🛡️  RESILIENCE SUMMARY")
+                logger.info("=" * 80)
+
+                # Final checkpoint save
+                self.checkpoint.save()
+                stats = self.checkpoint.get_statistics()
+                logger.info(f"✅ Checkpoint saved:")
+                logger.info(f"   Processed: {len(self.checkpoint.state['processed_urls'])} URLs")
+                logger.info(f"   Success: {stats['successful']}")
+                logger.info(f"   Failed: {stats['failed']}")
+                logger.info(f"   Skipped: {stats['skipped']}")
+
+                # Export failure queue if there are failures
+                if len(self.failure_queue.failures) > 0:
+                    self.failure_queue.export_report("failed_urls_report.json")
+                    logger.info(f"\n❌ {len(self.failure_queue.failures)} failed URLs exported to: failed_urls_report.json")
+
+                    # Show retryable failures
+                    retryable = self.failure_queue.get_retryable(max_retries=3)
+                    if retryable:
+                        logger.info(f"   {len(retryable)} URLs can be retried")
+                        logger.info(f"   Run workflow again to retry failed URLs")
+                else:
+                    logger.info(f"\n✅ No failures - all URLs processed successfully!")
+
             # Note: Token usage tracking would need to aggregate across multiple strategies in dual mode
 
 
