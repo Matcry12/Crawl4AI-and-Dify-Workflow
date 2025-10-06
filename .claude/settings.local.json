@@ -25,7 +25,9 @@
       "Bash(grep:*)",
       "Bash(awk:*)",
       "WebFetch(domain:docs.dify.ai)",
-      "WebSearch"
+      "WebSearch",
+      "Bash(xargs:*)",
+      "Bash(tree:*)"
     ],
     "deny": []
   }

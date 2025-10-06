@@ -1,6 +1,6 @@
 from typing import Dict, Tuple, Optional, List
 from enum import Enum
-from intelligent_content_analyzer import IntelligentContentAnalyzer, ContentValue, ContentStructure
+from core.intelligent_content_analyzer import IntelligentContentAnalyzer, ContentValue, ContentStructure
 import logging
 
 # Try to import tiktoken, but make it optional

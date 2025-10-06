@@ -389,9 +389,10 @@
                     <div class="form-group">
                         <label for="extraction_model">🔍 Extraction Model (Content Processing)</label>
                         <select id="extraction_model" name="extraction_model" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 16px;" onchange="handleModelChange()">
-                            <option value="gemini/gemini-2.0-flash-exp">Gemini 2.0 Flash Exp (Recommended - Smart)</option>
+                            <option value="gemini/gemini-2.5-flash-lite" selected>Gemini 2.5 Flash Lite (Default - Fastest & Cheapest)</option>
+                            <option value="gemini/gemini-2.0-flash-exp">Gemini 2.0 Flash Exp (Smarter)</option>
                             <option value="gemini/gemini-1.5-pro">Gemini 1.5 Pro (Best Quality)</option>
-                            <option value="gemini/gemini-1.5-flash">Gemini 1.5 Flash (Faster)</option>
+                            <option value="gemini/gemini-1.5-flash">Gemini 1.5 Flash</option>
                             <option value="openai/gpt-4">OpenAI GPT-4</option>
                             <option value="openai/gpt-3.5-turbo">OpenAI GPT-3.5 Turbo</option>
                             <option value="anthropic/claude-3-opus">Claude 3 Opus</option>
@@ -404,8 +405,9 @@
                     <div class="form-group">
                         <label for="naming_model">📝 Naming Model (Knowledge Base Categorization)</label>
                         <select id="naming_model" name="naming_model" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 16px;" onchange="handleModelChange()">
-                            <option value="gemini/gemini-1.5-flash">Gemini 1.5 Flash (Recommended - Fast & Cheap)</option>
-                            <option value="gemini/gemini-2.0-flash-exp">Gemini 2.0 Flash Exp (Higher Quality)</option>
+                            <option value="gemini/gemini-2.5-flash-lite" selected>Gemini 2.5 Flash Lite (Default - Fastest & Cheapest)</option>
+                            <option value="gemini/gemini-2.0-flash-exp">Gemini 2.0 Flash Exp (Smarter)</option>
+                            <option value="gemini/gemini-1.5-flash">Gemini 1.5 Flash</option>
                             <option value="gemini/gemini-1.5-pro">Gemini 1.5 Pro</option>
                             <option value="openai/gpt-4o-mini">OpenAI GPT-4o Mini (Fast)</option>
                             <option value="openai/gpt-3.5-turbo">OpenAI GPT-3.5 Turbo</option>
@@ -488,8 +490,9 @@
                                 <div class="form-group">
                                     <label for="intelligent_analysis_model">📊 Content Analysis Model</label>
                                     <select id="intelligent_analysis_model" name="intelligent_analysis_model" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 16px;" onchange="handleAnalysisModelChange()">
-                                        <option value="gemini/gemini-1.5-flash">Gemini 1.5 Flash (Recommended - Fast)</option>
-                                        <option value="gemini/gemini-2.0-flash-exp">Gemini 2.0 Flash Exp</option>
+                                        <option value="gemini/gemini-2.5-flash-lite" selected>Gemini 2.5 Flash Lite (Default - Fastest & Cheapest)</option>
+                                        <option value="gemini/gemini-2.0-flash-exp">Gemini 2.0 Flash Exp (Smarter)</option>
+                                        <option value="gemini/gemini-1.5-flash">Gemini 1.5 Flash</option>
                                         <option value="openai/gpt-4o-mini">OpenAI GPT-4o Mini</option>
                                         <option value="openai/gpt-3.5-turbo">OpenAI GPT-3.5 Turbo</option>
                                         <option value="custom_analysis">➕ Custom Model...</option>
@@ -560,7 +563,15 @@
                 <button type="button" class="btn btn-cancel" id="cancelBtn" style="display: none; background-color: #ef4444; margin-left: 10px;">
                     Cancel Crawl
                 </button>
-                
+
+                <button type="button" class="btn" id="quickTestBtn" style="background-color: #10b981; margin-left: 10px;">
+                    🚀 Quick Test
+                </button>
+
+                <button type="button" class="btn" id="stressTestBtn" style="background-color: #f59e0b; margin-left: 10px;">
+                    ⚡ Stress Test
+                </button>
+
                 <span class="status-indicator idle" id="statusIndicator">
                     Idle
                 </span>
@@ -1199,9 +1210,9 @@
                         'Content-Type': 'application/json'
                     }
                 });
-                
+
                 const result = await response.json();
-                
+
                 if (response.ok) {
                     addLogEntry('Cancellation requested...', 'warning');
                 } else {
@@ -1211,7 +1222,99 @@
                 addLogEntry(`Error: ${error.message}`, 'error');
             }
         });
-        
+
+        // Quick Test button handler
+        document.getElementById('quickTestBtn').addEventListener('click', async () => {
+            try {
+                addLogEntry('🚀 Starting Quick Test (< 10 seconds)...', 'info');
+                document.getElementById('quickTestBtn').disabled = true;
+                document.getElementById('stressTestBtn').disabled = true;
+
+                const response = await fetch('/quick_test', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+
+                const result = await response.json();
+
+                if (response.ok && result.status === 'success') {
+                    addLogEntry('✅ Quick Test PASSED', 'success');
+                    addLogEntry('Test Output:', 'info');
+                    result.stdout.split('\n').forEach(line => {
+                        if (line.trim()) addLogEntry(line, 'log');
+                    });
+                } else {
+                    addLogEntry(`❌ Quick Test FAILED (Exit code: ${result.exit_code})`, 'error');
+                    if (result.stderr) {
+                        addLogEntry('Error Output:', 'error');
+                        result.stderr.split('\n').forEach(line => {
+                            if (line.trim()) addLogEntry(line, 'error');
+                        });
+                    }
+                }
+            } catch (error) {
+                addLogEntry(`Error running quick test: ${error.message}`, 'error');
+            } finally {
+                document.getElementById('quickTestBtn').disabled = false;
+                document.getElementById('stressTestBtn').disabled = false;
+            }
+        });
+
+        // Stress Test button handler
+        document.getElementById('stressTestBtn').addEventListener('click', async () => {
+            try {
+                addLogEntry('⚡ Starting Comprehensive Stress Test (may take 3-5 minutes)...', 'info');
+                document.getElementById('stressTestBtn').disabled = true;
+                document.getElementById('quickTestBtn').disabled = true;
+
+                const response = await fetch('/stress_test', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+
+                const result = await response.json();
+
+                if (response.ok && result.status === 'success') {
+                    addLogEntry('✅ Stress Test PASSED', 'success');
+
+                    // Display test results summary
+                    if (result.test_results) {
+                        const tr = result.test_results;
+                        addLogEntry(`📊 Test Summary: ${tr.passed}/${tr.total} tests passed (${((tr.passed/tr.total)*100).toFixed(1)}%)`, 'success');
+
+                        // Show each test result
+                        tr.results.forEach(test => {
+                            const icon = test.passed ? '✅' : '❌';
+                            const type = test.passed ? 'success' : 'error';
+                            addLogEntry(`${icon} ${test.test}: ${test.message}`, type);
+                        });
+                    }
+
+                    addLogEntry('Full Test Output:', 'info');
+                    result.stdout.split('\n').forEach(line => {
+                        if (line.trim()) addLogEntry(line, 'log');
+                    });
+                } else {
+                    addLogEntry(`❌ Stress Test FAILED (Exit code: ${result.exit_code})`, 'error');
+                    if (result.stderr) {
+                        addLogEntry('Error Output:', 'error');
+                        result.stderr.split('\n').forEach(line => {
+                            if (line.trim()) addLogEntry(line, 'error');
+                        });
+                    }
+                }
+            } catch (error) {
+                addLogEntry(`Error running stress test: ${error.message}`, 'error');
+            } finally {
+                document.getElementById('stressTestBtn').disabled = false;
+                document.getElementById('quickTestBtn').disabled = false;
+            }
+        });
+
         // Check initial status
         fetch('/status')
             .then(res => res.json())

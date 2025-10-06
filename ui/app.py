@@ -7,7 +7,9 @@ import json
 import threading
 import queue
 from datetime import datetime
-from crawl_workflow import CrawlWorkflow
+import sys
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+from core.crawl_workflow import CrawlWorkflow
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -83,7 +85,7 @@ def run_async_crawl(url, max_pages, max_depth, api_key, base_url, llm_api_key, e
         
         # Use default naming model if not specified
         if not naming_model:
-            naming_model = "gemini/gemini-1.5-flash"  # Default to fast model
+            naming_model = "gemini/gemini-2.5-flash-lite"  # Default to Gemini 2.5 Flash Lite
         
         progress_queue.put({
             'type': 'log',
@@ -266,8 +268,8 @@ def start_crawl():
     api_key = data.get('api_key', 'dataset-VoYPMEaQ8L1udk2F6oek99XK')
     base_url = data.get('base_url', 'http://localhost:8088')
     llm_api_key = data.get('llm_api_key', '')
-    extraction_model = data.get('extraction_model', 'gemini/gemini-2.0-flash-exp')
-    naming_model = data.get('naming_model', 'gemini/gemini-1.5-flash')
+    extraction_model = data.get('extraction_model', 'gemini/gemini-2.5-flash-lite')
+    naming_model = data.get('naming_model', 'gemini/gemini-2.5-flash-lite')
     knowledge_base_mode = data.get('knowledge_base_mode', 'automatic')
     selected_knowledge_base = data.get('selected_knowledge_base', None)
     
@@ -276,7 +278,7 @@ def start_crawl():
     dual_mode_type = data.get('dual_mode_type', 'threshold')
     word_threshold = int(data.get('word_threshold', 4000))
     use_intelligent_mode = data.get('use_intelligent_mode', False)
-    intelligent_analysis_model = data.get('intelligent_analysis_model', 'gemini/gemini-1.5-flash')
+    intelligent_analysis_model = data.get('intelligent_analysis_model', 'gemini/gemini-2.5-flash-lite')
     manual_mode = data.get('manual_mode', None)  # 'full_doc' or 'paragraph'
     
     # Custom LLM parameters
@@ -421,21 +423,102 @@ def get_knowledge_bases():
 def cancel_crawl():
     """Cancel the current crawl."""
     global current_loop
-    
+
     with task_lock:
         if current_task is None:
             return jsonify({
                 'status': 'error',
                 'message': 'No crawl is currently running'
             }), 400
-    
+
     # Set cancel event
     cancel_event.set()
-    
+
     return jsonify({
         'status': 'success',
         'message': 'Cancel request sent'
     })
+
+@app.route('/stress_test', methods=['POST'])
+def stress_test():
+    """Run comprehensive stress test on the crawl workflow system."""
+    import subprocess
+    import sys
+
+    try:
+        # Run the test script
+        test_path = os.path.join(os.path.dirname(__file__), '..', 'tests', 'test_crawl_workflow.py')
+        result = subprocess.run(
+            [sys.executable, test_path],
+            capture_output=True,
+            text=True,
+            timeout=300,  # 5 minute timeout
+            cwd=os.path.join(os.path.dirname(__file__), '..')
+        )
+
+        # Read test results if available
+        test_results = None
+        try:
+            results_path = os.path.join(os.path.dirname(__file__), '..', 'output', 'test_results.json')
+            with open(results_path, 'r') as f:
+                import json
+                test_results = json.load(f)
+        except:
+            pass
+
+        return jsonify({
+            'status': 'success' if result.returncode == 0 else 'failed',
+            'exit_code': result.returncode,
+            'stdout': result.stdout,
+            'stderr': result.stderr,
+            'test_results': test_results
+        })
+
+    except subprocess.TimeoutExpired:
+        return jsonify({
+            'status': 'error',
+            'message': 'Stress test timed out after 5 minutes'
+        }), 500
+    except Exception as e:
+        return jsonify({
+            'status': 'error',
+            'message': str(e)
+        }), 500
+
+@app.route('/quick_test', methods=['POST'])
+def quick_test():
+    """Run quick smoke test on the crawl workflow system."""
+    import subprocess
+    import sys
+
+    try:
+        # Run the quick test script
+        test_path = os.path.join(os.path.dirname(__file__), '..', 'tests', 'quick_test.py')
+        result = subprocess.run(
+            [sys.executable, test_path],
+            capture_output=True,
+            text=True,
+            timeout=60,  # 1 minute timeout
+            cwd=os.path.join(os.path.dirname(__file__), '..')
+        )
+
+        return jsonify({
+            'status': 'success' if result.returncode == 0 else 'failed',
+            'exit_code': result.returncode,
+            'stdout': result.stdout,
+            'stderr': result.stderr
+        })
+
+    except subprocess.TimeoutExpired:
+        return jsonify({
+            'status': 'error',
+            'message': 'Quick test timed out after 1 minute'
+        }), 500
+    except Exception as e:
+        return jsonify({
+            'status': 'error',
+            'message': str(e)
+        }), 500
 
 if __name__ == '__main__':
     app.run(debug=True, threaded=True, port=5000)

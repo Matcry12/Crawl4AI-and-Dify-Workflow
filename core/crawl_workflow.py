@@ -18,10 +18,10 @@ import re
 
 # Import the DifyAPI class
 import sys
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from dify_api_resilient import ResilientDifyAPI
-from content_processor import ContentProcessor, ProcessingMode
-from resilience_utils import CrawlCheckpoint, FailureQueue
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+from api.dify_api_resilient import ResilientDifyAPI
+from core.content_processor import ContentProcessor, ProcessingMode
+from core.resilience_utils import CrawlCheckpoint, FailureQueue
 
 # Configure logging
 logging.basicConfig(

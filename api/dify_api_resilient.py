@@ -8,8 +8,11 @@ circuit breaker, and error handling.
 import requests
 import json
 import logging
+import os
+import sys
 from typing import Optional
-from resilience_utils import with_retry, RetryConfig, CircuitBreaker
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+from core.resilience_utils import with_retry, RetryConfig, CircuitBreaker
 
 logger = logging.getLogger(__name__)
 
