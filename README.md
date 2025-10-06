@@ -57,48 +57,68 @@ ANTHROPIC_API_KEY=your_anthropic_api_key_here
 
 ## 🚀 Quick Start
 
-### Web Interface
+### Web Interface (Recommended)
 
-1. Start the web server:
+1. Start the application:
 ```bash
-python app.py
+python main.py
 ```
 
 2. Open your browser to `http://localhost:5000`
 
-3. Enter a URL and configure:
-   - Max pages to crawl
-   - Crawl depth
-   - Knowledge base selection mode (Automatic/Manual)
-   - Model selection for naming and extraction
+3. Configure your crawl:
+   - Enter target URL
+   - Set max pages and depth
+   - Choose models (defaults to Gemini 2.5 Flash Lite)
+   - Select knowledge base mode (Automatic/Manual)
 
 4. Click "Start Crawling" and monitor progress in real-time
+
+5. **Test the system:**
+   - Click 🚀 **Quick Test** for fast validation (< 10 sec)
+   - Click ⚡ **Stress Test** for comprehensive testing (3-5 min)
 
 ### Command Line
 
 ```python
 import asyncio
-from crawl_workflow import CrawlWorkflow
+from core.crawl_workflow import CrawlWorkflow
 
 async def main():
     # Initialize with automatic categorization
     workflow = CrawlWorkflow(
         dify_base_url="http://localhost:8088",
         dify_api_key="your-dify-api-key",
-        naming_model="gemini/gemini-1.5-flash",  # Fast model for categorization
+        naming_model="gemini/gemini-2.5-flash-lite",  # Fast & cheap
         knowledge_base_mode='automatic'
     )
-    
+
     # Crawl and process
     await workflow.crawl_and_process(
         url="https://docs.example.com",
         max_pages=20,
         max_depth=2,
-        extraction_model="gemini/gemini-2.0-flash-exp"  # Smart model for extraction
+        extraction_model="gemini/gemini-2.5-flash-lite"  # Default model
     )
 
 asyncio.run(main())
 ```
+
+## 📂 Project Structure
+
+See [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md) for complete folder organization.
+
+```
+Crawl4AI/
+├── main.py              # 🚀 Start here
+├── core/                # Business logic
+├── api/                 # Dify integration
+├── ui/                  # Web interface
+├── tests/               # Test suite
+└── docs/                # Documentation
+```
+
+For detailed documentation, see [docs/INDEX.md](docs/INDEX.md)
 
 ## 📚 Knowledge Base Selection
 
@@ -145,7 +165,7 @@ workflow = CrawlWorkflow(
 ```
 - Automatically filters low-value pages
 - Selects mode based on content structure
-- See [INTELLIGENT_DUAL_MODE_RAG_TUTORIAL.md](INTELLIGENT_DUAL_MODE_RAG_TUTORIAL.md) for complete tutorial
+- See [INTELLIGENT_DUAL_MODE_RAG_TUTORIAL.md](docs/INTELLIGENT_DUAL_MODE_RAG_TUTORIAL.md) for complete tutorial
 
 ### Chunking Strategies
 

@@ -35,22 +35,21 @@ Crawl4AI/
 │   ├── workflow_config.py   # Configuration management
 │   └── workflow_utils.py    # Helper functions
 │
-├── tests/                    # 🧪 Test Suite
-│   ├── test_crawl_workflow.py  # Comprehensive 10-test suite
-│   ├── quick_test.py        # Fast smoke tests (< 10 sec)
-│   ├── test_metadata.py     # Metadata functionality tests
-│   ├── test_single_crawl.py # Single page crawl tests
-│   └── [other test files]   # Legacy/specialized tests
+├── tests/                    # 🧪 Test Suite (CLEANED)
+│   ├── test_crawl_workflow.py  # ⭐ Comprehensive 10-test suite (100% passing)
+│   ├── quick_test.py        # 🚀 Fast smoke tests (< 10 sec)
+│   ├── Test_dify.py         # Dify API client class
+│   └── __init__.py          # Package marker
 │
-├── docs/                     # 📚 Documentation
-│   ├── README.md            # Main project documentation
+├── docs/                     # 📚 Documentation (CLEANED - 8 essential files)
+│   ├── INDEX.md             # ⭐ Documentation navigation
+│   ├── README_UI.md         # Web interface guide
+│   ├── DEPLOYMENT_GUIDE.md  # Setup & deployment
 │   ├── TEST_DOCUMENTATION.md  # Test suite guide
-│   ├── DEPLOYMENT_GUIDE.md  # Deployment instructions
-│   ├── INTEGRATION_SUMMARY.md  # Integration overview
-│   ├── ERROR_RESILIENCE_IMPLEMENTATION_REPORT.md
-│   ├── INTELLIGENT_DUAL_MODE_RAG_TUTORIAL.md
-│   ├── UI_INTELLIGENT_MODE_GUIDE.md
-│   └── [other docs]         # Feature-specific guides
+│   ├── ERROR_RESILIENCE_IMPLEMENTATION_REPORT.md  # Resilience features
+│   ├── INTELLIGENT_DUAL_MODE_RAG_TUTORIAL.md      # Dual-mode RAG
+│   ├── UI_INTELLIGENT_MODE_GUIDE.md   # Advanced UI features
+│   └── KB_API.md            # API reference
 │
 ├── models/                   # 📊 Data Models & Schemas
 │   └── schemas.py           # Pydantic schemas for extraction
