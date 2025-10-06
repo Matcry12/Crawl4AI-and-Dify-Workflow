@@ -23,7 +23,9 @@
       "Bash(playwright install)",
       "Bash(python3:*)",
       "Bash(grep:*)",
-      "Bash(awk:*)"
+      "Bash(awk:*)",
+      "WebFetch(domain:docs.dify.ai)",
+      "WebSearch"
     ],
     "deny": []
   }

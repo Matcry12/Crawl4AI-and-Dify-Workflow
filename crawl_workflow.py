@@ -5,6 +5,7 @@ import logging
 from pathlib import Path
 from typing import List, Tuple
 from urllib.parse import urlparse
+from datetime import datetime
 
 from crawl4ai import AsyncWebCrawler
 from crawl4ai.async_configs import BrowserConfig, CrawlerRunConfig, CacheMode, LLMConfig
@@ -55,6 +56,7 @@ class CrawlWorkflow:
         self.naming_model = naming_model or "gemini/gemini-1.5-flash"  # Default to fast model for naming
         self.knowledge_bases = {}  # Cache of existing knowledge bases
         self.document_cache = {}  # Cache of existing documents by knowledge base {kb_id: {doc_name: doc_id}}
+        self.metadata_cache = {}  # Cache of metadata fields by knowledge base {kb_id: {name: {id, type}}}
         self._initialized = False  # Track initialization state
         self.use_parent_child = use_parent_child  # Enable parent-child chunking (deprecated with dual mode)
         self.knowledge_base_mode = knowledge_base_mode  # 'automatic' or 'manual'
@@ -609,6 +611,121 @@ Examples:
             total_docs += len(docs)
 
         logger.info(f"✅ Preloaded {total_docs} documents from {len(self.knowledge_bases)} knowledge bases")
+
+    async def ensure_metadata_fields(self, kb_id: str) -> dict:
+        """Ensure standard metadata fields exist in a knowledge base.
+        Returns: dict mapping metadata names to their IDs and types
+        """
+        # Check cache first
+        if kb_id in self.metadata_cache:
+            return self.metadata_cache[kb_id]
+
+        # Get existing metadata fields
+        response = self.dify_api.get_metadata_list(kb_id)
+        existing_metadata = {}
+
+        if response.status_code == 200:
+            data = response.json()
+            for field in data.get('doc_metadata', []):
+                field_name = field.get('name')
+                field_id = field.get('id')
+                field_type = field.get('type')
+                if field_name and field_id:
+                    existing_metadata[field_name] = {'id': field_id, 'type': field_type}
+            logger.info(f"  📋 Found {len(existing_metadata)} existing metadata fields")
+
+        # Define required metadata fields
+        required_fields = {
+            'source_url': 'string',
+            'crawl_date': 'time',
+            'domain': 'string',
+            'content_type': 'string',
+            'processing_mode': 'string',
+            'word_count': 'number'
+        }
+
+        # Create missing fields
+        for field_name, field_type in required_fields.items():
+            if field_name not in existing_metadata:
+                logger.info(f"  ➕ Creating metadata field: {field_name} ({field_type})")
+                response = self.dify_api.create_knowledge_metadata(kb_id, field_type, field_name)
+
+                logger.debug(f"    Response status: {response.status_code}")
+                logger.debug(f"    Response body: {response.text}")
+
+                if response.status_code == 200:
+                    field_data = response.json()
+                    existing_metadata[field_name] = {
+                        'id': field_data.get('id'),
+                        'type': field_type
+                    }
+                    logger.info(f"    ✅ Created: {field_name} (ID: {field_data.get('id')})")
+                elif response.status_code == 201:
+                    # Some APIs return 201 for resource creation
+                    field_data = response.json()
+                    existing_metadata[field_name] = {
+                        'id': field_data.get('id'),
+                        'type': field_type
+                    }
+                    logger.info(f"    ✅ Created: {field_name} (ID: {field_data.get('id')})")
+                else:
+                    logger.error(f"    ❌ Failed to create {field_name} (status {response.status_code}): {response.text}")
+
+        # Cache the metadata
+        self.metadata_cache[kb_id] = existing_metadata
+        return existing_metadata
+
+    def prepare_document_metadata(self, url: str, processing_mode, word_count: int, metadata_fields: dict) -> list:
+        """Prepare metadata values for a document.
+
+        Args:
+            url: Source URL
+            processing_mode: ProcessingMode enum value
+            word_count: Word count of content
+            metadata_fields: dict of available metadata fields {name: {id, type}}
+
+        Returns:
+            List of metadata assignments [{"id": "...", "value": "...", "name": "..."}]
+        """
+        parsed_url = urlparse(url)
+        domain = parsed_url.netloc.replace('www.', '')
+
+        # Determine content type from URL
+        path_lower = parsed_url.path.lower()
+        if any(x in path_lower for x in ['/docs/', '/documentation/', '/guide/']):
+            content_type = 'documentation'
+        elif any(x in path_lower for x in ['/blog/', '/article/', '/news/']):
+            content_type = 'article'
+        elif any(x in path_lower for x in ['/tutorial/', '/how-to/']):
+            content_type = 'tutorial'
+        elif any(x in path_lower for x in ['/api/', '/reference/']):
+            content_type = 'api_reference'
+        else:
+            content_type = 'general'
+
+        # Build metadata list
+        metadata_list = []
+        current_time = int(datetime.now().timestamp())
+
+        metadata_values = {
+            'source_url': url,
+            'crawl_date': current_time,
+            'domain': domain,
+            'content_type': content_type,
+            'processing_mode': processing_mode.value if processing_mode else 'unknown',
+            'word_count': word_count
+        }
+
+        for field_name, value in metadata_values.items():
+            if field_name in metadata_fields:
+                field_info = metadata_fields[field_name]
+                metadata_list.append({
+                    'id': field_info['id'],
+                    'value': value,
+                    'name': field_name
+                })
+
+        return metadata_list
     
     async def push_to_knowledge_base(self, kb_id: str, content_data: dict, url: str, processing_mode: ProcessingMode = None) -> Tuple[bool, str]:
         """Push content to specific knowledge base with duplicate detection and dual-mode support.
@@ -616,10 +733,10 @@ Examples:
         """
         # Normalize URL
         url = url.rstrip('/')
-        
+
         markdown_content = content_data.get('description', '')
         title = content_data.get('title', 'Document')
-        
+
         # Generate consistent document name based on URL (title is ignored)
         doc_name = self.generate_document_name(url, title)
         logger.info(f"  🔍 Document name for push: {doc_name}")
@@ -631,7 +748,11 @@ Examples:
         if doc_name in existing_docs:
             logger.info(f"⏭️  Document already exists: {doc_name} (ID: {existing_docs[doc_name]})")
             return True, "skipped_existing"
-        
+
+        # Ensure metadata fields exist for this KB
+        logger.info(f"  🏷️  Ensuring metadata fields exist...")
+        metadata_fields = await self.ensure_metadata_fields(kb_id)
+
         # Determine configuration based on mode
         if self.enable_dual_mode and processing_mode:
             # Use dual-mode configuration
@@ -650,7 +771,7 @@ Examples:
                 text=markdown_content,
                 use_parent_child=self.use_parent_child
             )
-        
+
         if response.status_code == 200:
             # Update cache with new document
             doc_data = response.json()
@@ -660,6 +781,21 @@ Examples:
             if doc_id:
                 existing_docs[doc_name] = doc_id
                 logger.info(f"✅ Successfully pushed new document: {doc_name} (ID: {doc_id})")
+
+                # Assign metadata to the document
+                word_count = len(markdown_content.split())
+                metadata_list = self.prepare_document_metadata(url, processing_mode, word_count, metadata_fields)
+
+                if metadata_list:
+                    logger.info(f"  🏷️  Assigning {len(metadata_list)} metadata fields...")
+                    metadata_response = self.dify_api.assign_document_metadata(kb_id, doc_id, metadata_list)
+                    if metadata_response.status_code == 200:
+                        logger.info(f"    ✅ Metadata assigned successfully")
+                        for meta in metadata_list:
+                            if meta['name'] in ['source_url', 'domain', 'content_type', 'processing_mode']:
+                                logger.info(f"      • {meta['name']}: {meta['value']}")
+                    else:
+                        logger.warning(f"    ⚠️  Failed to assign metadata: {metadata_response.text}")
             else:
                 logger.warning(f"⚠️  Document created but no ID returned: {doc_name}")
                 logger.info(f"  Response structure: {list(doc_data.keys())}")
