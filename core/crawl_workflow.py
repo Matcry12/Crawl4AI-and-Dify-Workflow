@@ -993,14 +993,298 @@ Target 3000-6000 words total with sections separated by ###SECTION_BREAK###. Out
             logger.error(f"❌ Error processing content: {e}")
             return False, "error"
     
-    async def crawl_and_process(self, url: str, max_pages: int = 10, max_depth: int = 1, extraction_model: str = "gemini/gemini-2.0-flash-exp"):
+    async def _process_single_url(self, process_url: str, idx: int, total: int, extraction_model: str,
+                                  crawler, extraction_failures: list, workflow_results: list) -> bool:
+        """Process a single URL with extraction and workflow integration.
+
+        Returns:
+            bool: True if extraction was successful, False otherwise
+        """
+        logger.info(f"\n[{idx}/{total}] Processing: {process_url}")
+
+        retry_count = 0
+        max_retries = 2
+        extraction_successful = False
+
+        while retry_count <= max_retries and not extraction_successful:
+            try:
+                if retry_count > 0:
+                    logger.info(f"  🔄 Retry attempt {retry_count}/{max_retries}...")
+                    await asyncio.sleep(2)  # Brief delay before retry
+
+                # First, get the raw content to analyze its length if dual mode is enabled
+                if self.enable_dual_mode:
+                    logger.info(f"  🔍 Dual-mode enabled: Getting raw content for analysis...")
+                    # Get content without extraction first
+                    raw_config = CrawlerRunConfig(
+                        extraction_strategy=None,
+                        cache_mode=CacheMode.BYPASS
+                    )
+                    raw_result = await crawler.arun(url=process_url, config=raw_config)
+
+                    logger.info(f"  📄 Raw crawl result:")
+                    logger.info(f"    Success: {raw_result.success}")
+                    logger.info(f"    Has markdown: {bool(getattr(raw_result, 'markdown', None))}")
+                    logger.info(f"    Markdown length: {len(getattr(raw_result, 'markdown', '')) if getattr(raw_result, 'markdown', None) else 0}")
+
+                    if raw_result.success and raw_result.markdown:
+                        # Determine processing mode based on content
+                        logger.info(f"  🔍 Mode selection process:")
+
+                        # Check for manual mode first
+                        if self.manual_mode:
+                            if self.manual_mode == 'full_doc':
+                                processing_mode = ProcessingMode.FULL_DOC
+                                logger.info(f"  ✋ Manual mode: FULL DOC")
+                            else:
+                                processing_mode = ProcessingMode.PARAGRAPH
+                                logger.info(f"  ✋ Manual mode: PARAGRAPH")
+                            mode_analysis = {'manual_mode': True, 'selection_reason': f'Manual override: {self.manual_mode}'}
+                        # Use intelligent mode if enabled
+                        elif self.use_intelligent_mode:
+                            try:
+                                logger.info(f"  🤖 Running intelligent content analysis...")
+                                processing_mode, mode_analysis = await self.content_processor.determine_processing_mode_intelligent(
+                                    raw_result.markdown, process_url
+                                )
+
+                                # Check if we should skip this page
+                                if mode_analysis.get('skip', False):
+                                    logger.info(f"  ⏭️  Skipping page: {mode_analysis.get('skip_reason', 'Low value content')}")
+                                    logger.info(f"     Content value: {mode_analysis.get('content_value', 'low')}")
+                                    return False  # Skip to next URL
+
+                                logger.info(f"  📊 Intelligent analysis results:")
+                                logger.info(f"     🎯 Content value: {mode_analysis.get('content_value', 'unknown')}")
+                                logger.info(f"     📋 Structure: {mode_analysis.get('content_structure', 'unknown')}")
+                                logger.info(f"     📝 Type: {mode_analysis.get('content_type', 'unknown')}")
+                                logger.info(f"     🔍 Main topics: {', '.join(mode_analysis.get('main_topics', []))}")
+                                logger.info(f"  📄 Selected mode: {processing_mode.value}")
+                                # Show the AI's reasoning if available, otherwise show selection reason
+                                reason = mode_analysis.get('mode_reason') or mode_analysis.get('selection_reason', '')
+                                if reason:
+                                    logger.info(f"     ℹ️  {reason}")
+
+                            except Exception as e:
+                                logger.warning(f"  ⚠️  Intelligent analysis failed: {e}")
+                                logger.info(f"  🔄 Falling back to threshold-based mode selection...")
+                                # Fall back to regular mode selection
+                                url_suggests_full_doc = self.content_processor.should_use_full_doc_for_url(process_url)
+                                if url_suggests_full_doc:
+                                    processing_mode = ProcessingMode.FULL_DOC
+                                    logger.info(f"  📄 URL pattern suggests full doc mode")
+                                else:
+                                    processing_mode, mode_analysis = self.content_processor.determine_processing_mode(raw_result.markdown)
+                                    logger.info(f"  📊 Threshold-based analysis:")
+                                    logger.info(f"     📝 Word count: {mode_analysis.get('word_count', 0):,} words")
+                                    logger.info(f"     🎯 Token count: {mode_analysis.get('token_count', 0):,} tokens")
+                                    logger.info(f"  📄 Selected mode: {processing_mode.value}")
+                                    logger.info(f"     ℹ️  {mode_analysis.get('selection_reason', '')}")
+                        else:
+                            # Regular threshold-based mode selection
+                            url_suggests_full_doc = self.content_processor.should_use_full_doc_for_url(process_url)
+                            logger.info(f"    URL suggests full doc: {url_suggests_full_doc}")
+
+                            if url_suggests_full_doc:
+                                processing_mode = ProcessingMode.FULL_DOC
+                                logger.info(f"  📄 URL pattern suggests full doc mode")
+                                logger.info(f"    Final selected mode: {processing_mode.value}")
+                            else:
+                                processing_mode, mode_analysis = self.content_processor.determine_processing_mode(raw_result.markdown)
+                                logger.info(f"  📊 Content analysis:")
+                                logger.info(f"     📝 Word count: {mode_analysis.get('word_count', 0):,} words")
+                                logger.info(f"     🎯 Token count: {mode_analysis.get('token_count', 0):,} tokens")
+                                logger.info(f"     📏 Using {mode_analysis.get('threshold_type', 'word')} threshold")
+                                logger.info(f"     🔍 Decision: {mode_analysis.get('decision', '')}")
+                                logger.info(f"  📄 Selected mode: {processing_mode.value}")
+                                logger.info(f"     ℹ️  {mode_analysis.get('selection_reason', '')}")
+
+                        # Create appropriate extraction strategy
+                        logger.info(f"  🛠️  Creating extraction strategy for {processing_mode.value} mode...")
+                        extraction_strategy = self.create_extraction_strategy(processing_mode, extraction_model)
+                        extraction_config = CrawlerRunConfig(
+                            extraction_strategy=extraction_strategy,
+                            cache_mode=CacheMode.BYPASS
+                        )
+                    else:
+                        logger.warning(f"  ⚠️  Failed to get raw content for analysis")
+                        logger.info(f"    Raw result success: {raw_result.success}")
+                        logger.info(f"    Raw result markdown: {bool(getattr(raw_result, 'markdown', None))}")
+                        if hasattr(raw_result, 'error_message'):
+                            logger.error(f"    Error: {raw_result.error_message}")
+                        logger.info(f"    Using default mode...")
+                        # Fall back to default strategy
+                        processing_mode = ProcessingMode.PARAGRAPH if self.use_parent_child else None
+                        extraction_strategy = self.create_extraction_strategy(processing_mode, extraction_model)
+                        extraction_config = CrawlerRunConfig(
+                            extraction_strategy=extraction_strategy,
+                            cache_mode=CacheMode.BYPASS
+                        )
+                else:
+                    # Legacy mode - create extraction strategy based on use_parent_child
+                    processing_mode = ProcessingMode.PARAGRAPH if self.use_parent_child else None
+                    extraction_strategy = self.create_extraction_strategy(processing_mode, extraction_model)
+                    extraction_config = CrawlerRunConfig(
+                        extraction_strategy=extraction_strategy,
+                        cache_mode=CacheMode.BYPASS
+                    )
+
+                # Now extract with the appropriate strategy
+                result = await crawler.arun(url=process_url, config=extraction_config)
+
+                # Enhanced logging for debugging
+                logger.info(f"  🔍 Crawl result details:")
+                logger.info(f"    Success: {result.success}")
+                logger.info(f"    Has extracted_content: {bool(result.extracted_content)}")
+                logger.info(f"    Has markdown: {bool(getattr(result, 'markdown', None))}")
+                logger.info(f"    Has cleaned_html: {bool(getattr(result, 'cleaned_html', None))}")
+
+                if hasattr(result, 'error_message') and result.error_message:
+                    logger.error(f"    Error message: {result.error_message}")
+
+                if result.extracted_content:
+                    logger.info(f"    Extracted content type: {type(result.extracted_content)}")
+                    if isinstance(result.extracted_content, str):
+                        logger.info(f"    Extracted content length: {len(result.extracted_content)} chars")
+                        logger.info(f"    Extracted content preview: {result.extracted_content[:200]}...")
+                    else:
+                        logger.info(f"    Extracted content: {result.extracted_content}")
+
+                if result.success and result.extracted_content:
+                    # Parse extracted data with enhanced error handling
+                    try:
+                        if isinstance(result.extracted_content, str):
+                            logger.info(f"  📝 Parsing JSON string...")
+                            extracted_data = json.loads(result.extracted_content)
+                        else:
+                            logger.info(f"  📝 Using direct extracted content...")
+                            extracted_data = result.extracted_content
+
+                        logger.info(f"  📊 Parsed data type: {type(extracted_data)}")
+
+                        if isinstance(extracted_data, list):
+                            logger.info(f"  📋 List with {len(extracted_data)} items")
+                            extracted_data = extracted_data[0] if extracted_data else {}
+
+                        logger.info(f"  🔑 Final data keys: {list(extracted_data.keys()) if isinstance(extracted_data, dict) else 'Not a dict'}")
+
+                        if extracted_data and extracted_data.get('description'):
+                            logger.info(f"  ✅ Valid description found: {len(extracted_data.get('description', ''))} chars")
+                            # Save JSON
+                            url_filename = process_url.replace("https://", "").replace("http://", "")
+                            url_filename = url_filename.replace("/", "_").replace("?", "_").replace(":", "_")
+                            if len(url_filename) > 100:
+                                url_filename = url_filename[:100]
+
+                            json_file = Path("output") / f"{url_filename}.json"
+                            with open(json_file, "w", encoding="utf-8") as f:
+                                json.dump(extracted_data, f, indent=2, ensure_ascii=False)
+
+                            logger.info(f"  💾 Saved: {json_file}")
+
+                            # Display summary
+                            logger.info(f"  📄 Title: {extracted_data.get('title', 'N/A')}")
+                            desc = extracted_data.get('description', '')
+                            desc_length = len(desc)
+                            # Display summary based on actual content structure
+                            if '###PARENT_SECTION###' in desc:
+                                parent_count = desc.count('###PARENT_SECTION###')
+                                child_count = desc.count('###CHILD_SECTION###')
+                                logger.info(f"  📝 Description: {desc_length} characters in {parent_count} parent chunks with {child_count} child chunks")
+                            elif '###SECTION###' in desc:
+                                section_count = desc.count('###SECTION###')
+                                logger.info(f"  📝 Description: {desc_length} characters in {section_count} sections (full doc mode)")
+                            elif '###SECTION_BREAK###' in desc:
+                                chunk_count = desc.count('###SECTION_BREAK###') + 1
+                                logger.info(f"  📝 Description: {desc_length} characters in {chunk_count} chunks")
+                            else:
+                                # No recognized markers
+                                logger.info(f"  📝 Description: {desc_length} characters")
+
+                            # Process through workflow (pass the processing mode that was determined)
+                            workflow_success, status = await self.process_crawled_content(
+                                extracted_data, process_url, processing_mode
+                            )
+
+                            # Track in checkpoint and failure queue
+                            if self.enable_resilience:
+                                if workflow_success:
+                                    self.checkpoint.mark_processed(process_url, success=True)
+                                else:
+                                    self.checkpoint.mark_failed(process_url, f"Workflow status: {status}")
+                                    self.failure_queue.add(process_url, f"Workflow failed: {status}")
+
+                                # Save checkpoint every 5 URLs
+                                if len(self.checkpoint.state['processed_urls']) % 5 == 0:
+                                    self.checkpoint.save()
+
+                            workflow_results.append({
+                                'url': process_url,
+                                'title': extracted_data.get('title', 'Untitled'),
+                                'success': workflow_success,
+                                'status': status,
+                                'category': await self.categorize_content(desc, process_url)
+                            })
+
+                            extraction_successful = True
+                        else:
+                            logger.warning(f"  ⚠️  No valid content extracted")
+                            logger.info(f"    Reason: Missing description field or empty data")
+                            logger.info(f"    Data structure: {extracted_data}")
+                            if retry_count < max_retries:
+                                retry_count += 1
+                            else:
+                                extraction_failures.append(process_url)
+                                break
+
+                    except json.JSONDecodeError as e:
+                        logger.error(f"  ❌ JSON parsing error: {e}")
+                        logger.error(f"    Raw content: {result.extracted_content[:500]}...")
+                        if retry_count < max_retries:
+                            retry_count += 1
+                        else:
+                            extraction_failures.append(process_url)
+                            break
+                    except Exception as e:
+                        logger.error(f"  ❌ Extraction parsing error: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        if retry_count < max_retries:
+                            retry_count += 1
+                        else:
+                            extraction_failures.append(process_url)
+                            break
+                else:
+                    logger.warning(f"  ⚠️  Extraction failed: {result.error_message if hasattr(result, 'error_message') else 'Unknown error'}")
+                    if retry_count < max_retries:
+                        retry_count += 1
+                    else:
+                        extraction_failures.append(process_url)
+                        break
+
+            except Exception as e:
+                logger.error(f"  ❌ Error: {e}")
+                if retry_count < max_retries:
+                    retry_count += 1
+                else:
+                    extraction_failures.append(process_url)
+                    # Track extraction failure
+                    if self.enable_resilience:
+                        self.checkpoint.mark_failed(process_url, f"Extraction error: {str(e)}")
+                        self.failure_queue.add(process_url, f"Extraction failed after {max_retries} retries: {str(e)}")
+                    break
+
+        return extraction_successful
+
+    async def crawl_and_process(self, url: str, max_pages: int = 10, max_depth: int = 1, extraction_model: str = "gemini/gemini-2.0-flash-exp", max_concurrent: int = 1):
         """Main workflow: crawl website, check duplicates BEFORE extraction, and organize in knowledge bases.
-        
+
         Args:
             url: The starting URL to crawl
             max_pages: Maximum number of pages to crawl
             max_depth: Maximum depth for deep crawling
             extraction_model: The LLM model to use for content extraction
+            max_concurrent: Maximum number of URLs to process concurrently (default: 1, parallel: 3-5)
         
         Note: 
             - Uses self.naming_model for knowledge base categorization (fast model)
@@ -1160,288 +1444,40 @@ Target 3000-6000 words total with sections separated by ###SECTION_BREAK###. Out
             
             extracted_files = []
             workflow_results = []
-            extraction_failures = 0
-            
-            # Process each new URL with dynamic extraction strategy
-            # We'll create extraction strategy per URL if dual mode is enabled
-            
-            # Process each new URL
-            for idx, process_url in enumerate(urls_to_process, 1):
-                logger.info(f"\n[{idx}/{len(urls_to_process)}] Processing: {process_url}")
+            extraction_failures_list = []
 
-                retry_count = 0
-                max_retries = 2
-                extraction_successful = False
+            # Process URLs: sequential or parallel based on max_concurrent
+            if max_concurrent > 1:
+                logger.info(f"🚀 Parallel processing enabled: {max_concurrent} concurrent URLs")
+                semaphore = asyncio.Semaphore(max_concurrent)
 
-                while retry_count <= max_retries and not extraction_successful:
-                    try:
-                        if retry_count > 0:
-                            logger.info(f"  🔄 Retry attempt {retry_count}/{max_retries}...")
-                            await asyncio.sleep(2)  # Brief delay before retry
+                async def process_with_semaphore(idx, process_url):
+                    async with semaphore:
+                        return await self._process_single_url(
+                            process_url, idx, len(urls_to_process), extraction_model,
+                            crawler, extraction_failures_list, workflow_results
+                        )
 
-                        # First, get the raw content to analyze its length if dual mode is enabled
-                        if self.enable_dual_mode:
-                            logger.info(f"  🔍 Dual-mode enabled: Getting raw content for analysis...")
-                            # Get content without extraction first
-                            raw_config = CrawlerRunConfig(
-                                extraction_strategy=None,
-                                cache_mode=CacheMode.BYPASS
-                            )
-                            raw_result = await crawler.arun(url=process_url, config=raw_config)
+                # Process all URLs in parallel with concurrency limit
+                tasks = [process_with_semaphore(idx, url) for idx, url in enumerate(urls_to_process, 1)]
+                results = await asyncio.gather(*tasks, return_exceptions=True)
 
-                            logger.info(f"  📄 Raw crawl result:")
-                            logger.info(f"    Success: {raw_result.success}")
-                            logger.info(f"    Has markdown: {bool(getattr(raw_result, 'markdown', None))}")
-                            logger.info(f"    Markdown length: {len(getattr(raw_result, 'markdown', '')) if getattr(raw_result, 'markdown', None) else 0}")
+                # Count extraction failures
+                extraction_failures = len(extraction_failures_list)
 
-                            if raw_result.success and raw_result.markdown:
-                                # Determine processing mode based on content
-                                logger.info(f"  🔍 Mode selection process:")
-                                
-                                # Check for manual mode first
-                                if self.manual_mode:
-                                    if self.manual_mode == 'full_doc':
-                                        processing_mode = ProcessingMode.FULL_DOC
-                                        logger.info(f"  ✋ Manual mode: FULL DOC")
-                                    else:
-                                        processing_mode = ProcessingMode.PARAGRAPH
-                                        logger.info(f"  ✋ Manual mode: PARAGRAPH")
-                                    mode_analysis = {'manual_mode': True, 'selection_reason': f'Manual override: {self.manual_mode}'}
-                                # Use intelligent mode if enabled
-                                elif self.use_intelligent_mode:
-                                    try:
-                                        logger.info(f"  🤖 Running intelligent content analysis...")
-                                        processing_mode, mode_analysis = await self.content_processor.determine_processing_mode_intelligent(
-                                            raw_result.markdown, process_url
-                                        )
+            else:
+                logger.info(f"📝 Sequential processing: 1 URL at a time")
+                extraction_failures = 0
 
-                                        # Check if we should skip this page
-                                        if mode_analysis.get('skip', False):
-                                            logger.info(f"  ⏭️  Skipping page: {mode_analysis.get('skip_reason', 'Low value content')}")
-                                            logger.info(f"     Content value: {mode_analysis.get('content_value', 'low')}")
-                                            continue  # Skip to next URL
+                # Sequential processing (original behavior)
+                for idx, process_url in enumerate(urls_to_process, 1):
+                    success = await self._process_single_url(
+                        process_url, idx, len(urls_to_process), extraction_model,
+                        crawler, extraction_failures_list, workflow_results
+                    )
+                    if not success:
+                        extraction_failures += 1
 
-                                        logger.info(f"  📊 Intelligent analysis results:")
-                                        logger.info(f"     🎯 Content value: {mode_analysis.get('content_value', 'unknown')}")
-                                        logger.info(f"     📋 Structure: {mode_analysis.get('content_structure', 'unknown')}")
-                                        logger.info(f"     📝 Type: {mode_analysis.get('content_type', 'unknown')}")
-                                        logger.info(f"     🔍 Main topics: {', '.join(mode_analysis.get('main_topics', []))}")
-                                        logger.info(f"  📄 Selected mode: {processing_mode.value}")
-                                        # Show the AI's reasoning if available, otherwise show selection reason
-                                        reason = mode_analysis.get('mode_reason') or mode_analysis.get('selection_reason', '')
-                                        if reason:
-                                            logger.info(f"     ℹ️  {reason}")
-                                        
-                                    except Exception as e:
-                                        logger.warning(f"  ⚠️  Intelligent analysis failed: {e}")
-                                        logger.info(f"  🔄 Falling back to threshold-based mode selection...")
-                                        # Fall back to regular mode selection
-                                        url_suggests_full_doc = self.content_processor.should_use_full_doc_for_url(process_url)
-                                        if url_suggests_full_doc:
-                                            processing_mode = ProcessingMode.FULL_DOC
-                                            logger.info(f"  📄 URL pattern suggests full doc mode")
-                                        else:
-                                            processing_mode, mode_analysis = self.content_processor.determine_processing_mode(raw_result.markdown)
-                                            logger.info(f"  📊 Threshold-based analysis:")
-                                            logger.info(f"     📝 Word count: {mode_analysis.get('word_count', 0):,} words")
-                                            logger.info(f"     🎯 Token count: {mode_analysis.get('token_count', 0):,} tokens")
-                                            logger.info(f"  📄 Selected mode: {processing_mode.value}")
-                                            logger.info(f"     ℹ️  {mode_analysis.get('selection_reason', '')}")
-                                else:
-                                    # Regular threshold-based mode selection
-                                    url_suggests_full_doc = self.content_processor.should_use_full_doc_for_url(process_url)
-                                    logger.info(f"    URL suggests full doc: {url_suggests_full_doc}")
-
-                                    if url_suggests_full_doc:
-                                        processing_mode = ProcessingMode.FULL_DOC
-                                        logger.info(f"  📄 URL pattern suggests full doc mode")
-                                        logger.info(f"    Final selected mode: {processing_mode.value}")
-                                    else:
-                                        processing_mode, mode_analysis = self.content_processor.determine_processing_mode(raw_result.markdown)
-                                        logger.info(f"  📊 Content analysis:")
-                                        logger.info(f"     📝 Word count: {mode_analysis.get('word_count', 0):,} words")
-                                        logger.info(f"     🎯 Token count: {mode_analysis.get('token_count', 0):,} tokens")
-                                        logger.info(f"     📏 Using {mode_analysis.get('threshold_type', 'word')} threshold")
-                                        logger.info(f"     🔍 Decision: {mode_analysis.get('decision', '')}")
-                                        logger.info(f"  📄 Selected mode: {processing_mode.value}")
-                                        logger.info(f"     ℹ️  {mode_analysis.get('selection_reason', '')}")
-
-                                # Create appropriate extraction strategy
-                                logger.info(f"  🛠️  Creating extraction strategy for {processing_mode.value} mode...")
-                                extraction_strategy = self.create_extraction_strategy(processing_mode, extraction_model)
-                                extraction_config = CrawlerRunConfig(
-                                    extraction_strategy=extraction_strategy,
-                                    cache_mode=CacheMode.BYPASS
-                                )
-                            else:
-                                logger.warning(f"  ⚠️  Failed to get raw content for analysis")
-                                logger.info(f"    Raw result success: {raw_result.success}")
-                                logger.info(f"    Raw result markdown: {bool(getattr(raw_result, 'markdown', None))}")
-                                if hasattr(raw_result, 'error_message'):
-                                    logger.error(f"    Error: {raw_result.error_message}")
-                                logger.info(f"    Using default mode...")
-                                # Fall back to default strategy
-                                processing_mode = ProcessingMode.PARAGRAPH if self.use_parent_child else None
-                                extraction_strategy = self.create_extraction_strategy(processing_mode, extraction_model)
-                                extraction_config = CrawlerRunConfig(
-                                    extraction_strategy=extraction_strategy,
-                                    cache_mode=CacheMode.BYPASS
-                                )
-                        else:
-                            # Legacy mode - create extraction strategy based on use_parent_child
-                            processing_mode = ProcessingMode.PARAGRAPH if self.use_parent_child else None
-                            extraction_strategy = self.create_extraction_strategy(processing_mode, extraction_model)
-                            extraction_config = CrawlerRunConfig(
-                                extraction_strategy=extraction_strategy,
-                                cache_mode=CacheMode.BYPASS
-                            )
-                        
-                        # Now extract with the appropriate strategy
-                        result = await crawler.arun(url=process_url, config=extraction_config)
-
-                        # Enhanced logging for debugging
-                        logger.info(f"  🔍 Crawl result details:")
-                        logger.info(f"    Success: {result.success}")
-                        logger.info(f"    Has extracted_content: {bool(result.extracted_content)}")
-                        logger.info(f"    Has markdown: {bool(getattr(result, 'markdown', None))}")
-                        logger.info(f"    Has cleaned_html: {bool(getattr(result, 'cleaned_html', None))}")
-
-                        if hasattr(result, 'error_message') and result.error_message:
-                            logger.error(f"    Error message: {result.error_message}")
-
-                        if result.extracted_content:
-                            logger.info(f"    Extracted content type: {type(result.extracted_content)}")
-                            if isinstance(result.extracted_content, str):
-                                logger.info(f"    Extracted content length: {len(result.extracted_content)} chars")
-                                logger.info(f"    Extracted content preview: {result.extracted_content[:200]}...")
-                            else:
-                                logger.info(f"    Extracted content: {result.extracted_content}")
-                        
-                        if result.success and result.extracted_content:
-                            # Parse extracted data with enhanced error handling
-                            try:
-                                if isinstance(result.extracted_content, str):
-                                    logger.info(f"  📝 Parsing JSON string...")
-                                    extracted_data = json.loads(result.extracted_content)
-                                else:
-                                    logger.info(f"  📝 Using direct extracted content...")
-                                    extracted_data = result.extracted_content
-
-                                logger.info(f"  📊 Parsed data type: {type(extracted_data)}")
-
-                                if isinstance(extracted_data, list):
-                                    logger.info(f"  📋 List with {len(extracted_data)} items")
-                                    extracted_data = extracted_data[0] if extracted_data else {}
-
-                                logger.info(f"  🔑 Final data keys: {list(extracted_data.keys()) if isinstance(extracted_data, dict) else 'Not a dict'}")
-                                
-                                if extracted_data and extracted_data.get('description'):
-                                    logger.info(f"  ✅ Valid description found: {len(extracted_data.get('description', ''))} chars")
-                                    # Save JSON
-                                    url_filename = process_url.replace("https://", "").replace("http://", "")
-                                    url_filename = url_filename.replace("/", "_").replace("?", "_").replace(":", "_")
-                                    if len(url_filename) > 100:
-                                        url_filename = url_filename[:100]
-
-                                    json_file = Path(output_dir) / f"{url_filename}.json"
-                                    with open(json_file, "w", encoding="utf-8") as f:
-                                        json.dump(extracted_data, f, indent=2, ensure_ascii=False)
-
-                                    extracted_files.append(str(json_file))
-                                    logger.info(f"  💾 Saved: {json_file}")
-
-                                    # Display summary
-                                    logger.info(f"  📄 Title: {extracted_data.get('title', 'N/A')}")
-                                    desc = extracted_data.get('description', '')
-                                    desc_length = len(desc)
-                                    # Display summary based on actual content structure
-                                    if '###PARENT_SECTION###' in desc:
-                                        parent_count = desc.count('###PARENT_SECTION###')
-                                        child_count = desc.count('###CHILD_SECTION###')
-                                        logger.info(f"  📝 Description: {desc_length} characters in {parent_count} parent chunks with {child_count} child chunks")
-                                    elif '###SECTION###' in desc:
-                                        section_count = desc.count('###SECTION###')
-                                        logger.info(f"  📝 Description: {desc_length} characters in {section_count} sections (full doc mode)")
-                                    elif '###SECTION_BREAK###' in desc:
-                                        chunk_count = desc.count('###SECTION_BREAK###') + 1
-                                        logger.info(f"  📝 Description: {desc_length} characters in {chunk_count} chunks")
-                                    else:
-                                        # No recognized markers
-                                        logger.info(f"  📝 Description: {desc_length} characters")
-                                    
-                                    # Process through workflow (pass the processing mode that was determined)
-                                    workflow_success, status = await self.process_crawled_content(
-                                        extracted_data, process_url, processing_mode
-                                    )
-
-                                    # Track in checkpoint and failure queue
-                                    if self.enable_resilience:
-                                        if workflow_success:
-                                            self.checkpoint.mark_processed(process_url, success=True)
-                                        else:
-                                            self.checkpoint.mark_failed(process_url, f"Workflow status: {status}")
-                                            self.failure_queue.add(process_url, f"Workflow failed: {status}")
-
-                                        # Save checkpoint every 5 URLs
-                                        if len(self.checkpoint.state['processed_urls']) % 5 == 0:
-                                            self.checkpoint.save()
-
-                                    workflow_results.append({
-                                        'url': process_url,
-                                        'title': extracted_data.get('title', 'Untitled'),
-                                        'success': workflow_success,
-                                        'status': status,
-                                        'category': await self.categorize_content(desc, process_url)
-                                    })
-
-                                    extraction_successful = True
-                                else:
-                                    logger.warning(f"  ⚠️  No valid content extracted")
-                                    logger.info(f"    Reason: Missing description field or empty data")
-                                    logger.info(f"    Data structure: {extracted_data}")
-                                    if retry_count < max_retries:
-                                        retry_count += 1
-                                    else:
-                                        extraction_failures += 1
-                                        break
-
-                            except json.JSONDecodeError as e:
-                                logger.error(f"  ❌ JSON parsing error: {e}")
-                                logger.error(f"    Raw content: {result.extracted_content[:500]}...")
-                                if retry_count < max_retries:
-                                    retry_count += 1
-                                else:
-                                    extraction_failures += 1
-                                    break
-                            except Exception as e:
-                                logger.error(f"  ❌ Extraction parsing error: {e}")
-                                import traceback
-                                traceback.print_exc()
-                                if retry_count < max_retries:
-                                    retry_count += 1
-                                else:
-                                    extraction_failures += 1
-                                    break
-                        else:
-                            logger.warning(f"  ⚠️  Extraction failed: {result.error_message if hasattr(result, 'error_message') else 'Unknown error'}")
-                            if retry_count < max_retries:
-                                retry_count += 1
-                            else:
-                                extraction_failures += 1
-                                break
-
-                    except Exception as e:
-                        logger.error(f"  ❌ Error: {e}")
-                        if retry_count < max_retries:
-                            retry_count += 1
-                        else:
-                            extraction_failures += 1
-                            # Track extraction failure
-                            if self.enable_resilience:
-                                self.checkpoint.mark_failed(process_url, f"Extraction error: {str(e)}")
-                                self.failure_queue.add(process_url, f"Extraction failed after {max_retries} retries: {str(e)}")
-                            break
-            
             # Final summary
             logger.info("\n" + "=" * 80)
             logger.info("🎯 INTELLIGENT CRAWL WORKFLOW SUMMARY")

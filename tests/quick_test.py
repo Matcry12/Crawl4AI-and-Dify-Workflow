@@ -107,8 +107,23 @@ async def quick_test():
     assert workflow.dify_api.enable_retry is True, "Retry should be enabled"
     assert workflow.dify_api.enable_circuit_breaker is True, "Circuit breaker should be enabled"
 
+    # Test 9: Parallel processing parameter
+    logger.info("\n✓ Test 9: Parallel Processing Parameter")
+    # Test that crawl_and_process accepts max_concurrent parameter
+    import inspect
+    sig = inspect.signature(workflow.crawl_and_process)
+    params = list(sig.parameters.keys())
+    assert 'max_concurrent' in params, "max_concurrent parameter should exist"
+    default_value = sig.parameters['max_concurrent'].default
+    assert default_value == 1, f"Default max_concurrent should be 1, got {default_value}"
+    logger.info(f"  max_concurrent parameter: exists with default={default_value}")
+
+    # Test that _process_single_url method exists
+    assert hasattr(workflow, '_process_single_url'), "_process_single_url method should exist"
+    logger.info(f"  _process_single_url method: exists")
+
     logger.info("\n" + "="*80)
-    logger.info("✅ ALL QUICK TESTS PASSED (8 tests)")
+    logger.info("✅ ALL QUICK TESTS PASSED (9 tests)")
     logger.info("="*80)
 
 

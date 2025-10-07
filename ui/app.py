@@ -57,8 +57,8 @@ class QueueHandler(logging.Handler):
         except Exception:
             self.handleError(record)
 
-def run_async_crawl(url, max_pages, max_depth, api_key, base_url, llm_api_key, extraction_model, naming_model=None, knowledge_base_mode='automatic', selected_knowledge_base=None, enable_dual_mode=True, dual_mode_type='threshold', word_threshold=4000, use_intelligent_mode=False, intelligent_analysis_model='gemini/gemini-1.5-flash', manual_mode=None, custom_llm_base_url=None, custom_llm_api_key=None, enable_connection_pooling=True, enable_retry=True, enable_circuit_breaker=True):
-    """Run the async crawl in a separate thread with dual-model, dual-mode, and performance settings support."""
+def run_async_crawl(url, max_pages, max_depth, api_key, base_url, llm_api_key, extraction_model, naming_model=None, knowledge_base_mode='automatic', selected_knowledge_base=None, enable_dual_mode=True, dual_mode_type='threshold', word_threshold=4000, use_intelligent_mode=False, intelligent_analysis_model='gemini/gemini-1.5-flash', manual_mode=None, custom_llm_base_url=None, custom_llm_api_key=None, enable_connection_pooling=True, enable_retry=True, enable_circuit_breaker=True, max_concurrent=1):
+    """Run the async crawl in a separate thread with dual-model, dual-mode, performance settings, and parallel processing support."""
     global current_task, current_loop
     
     # Create new event loop for this thread
@@ -204,7 +204,8 @@ def run_async_crawl(url, max_pages, max_depth, api_key, base_url, llm_api_key, e
                     url=url,
                     max_pages=max_pages,
                     max_depth=max_depth,
-                    extraction_model=extraction_model
+                    extraction_model=extraction_model,
+                    max_concurrent=max_concurrent
                 )
             )
             
@@ -222,6 +223,20 @@ def run_async_crawl(url, max_pages, max_depth, api_key, base_url, llm_api_key, e
             if not crawl_task.cancelled():
                 await crawl_task
         
+        # Log parallel processing configuration
+        if max_concurrent > 1:
+            progress_queue.put({
+                'type': 'log',
+                'message': f'🚀 Parallel Processing: ENABLED ({max_concurrent} concurrent URLs)',
+                'timestamp': datetime.now().isoformat()
+            })
+        else:
+            progress_queue.put({
+                'type': 'log',
+                'message': f'📝 Sequential Processing: 1 URL at a time',
+                'timestamp': datetime.now().isoformat()
+            })
+
         # Run the crawl
         loop.run_until_complete(crawl_with_cancel_check())
         
@@ -293,6 +308,7 @@ def start_crawl():
     enable_connection_pooling = data.get('enable_connection_pooling', True)
     enable_retry = data.get('enable_retry', True)
     enable_circuit_breaker = data.get('enable_circuit_breaker', True)
+    max_concurrent = int(data.get('max_concurrent', 1))
 
     if not url:
         return jsonify({
@@ -326,7 +342,7 @@ def start_crawl():
     with task_lock:
         current_task = threading.Thread(
             target=run_async_crawl,
-            args=(url, max_pages, max_depth, api_key, base_url, llm_api_key, extraction_model, naming_model, knowledge_base_mode, selected_knowledge_base, enable_dual_mode, dual_mode_type, word_threshold, use_intelligent_mode, intelligent_analysis_model, manual_mode, custom_llm_base_url, custom_llm_api_key, enable_connection_pooling, enable_retry, enable_circuit_breaker)
+            args=(url, max_pages, max_depth, api_key, base_url, llm_api_key, extraction_model, naming_model, knowledge_base_mode, selected_knowledge_base, enable_dual_mode, dual_mode_type, word_threshold, use_intelligent_mode, intelligent_analysis_model, manual_mode, custom_llm_base_url, custom_llm_api_key, enable_connection_pooling, enable_retry, enable_circuit_breaker, max_concurrent)
         )
         current_task.start()
     

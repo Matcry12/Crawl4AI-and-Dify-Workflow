@@ -571,11 +571,26 @@
 
                         <div class="form-group">
                             <label for="enable_parallel_processing">
-                                <input type="checkbox" id="enable_parallel_processing" name="enable_parallel_processing" style="margin-right: 8px;">
+                                <input type="checkbox" id="enable_parallel_processing" name="enable_parallel_processing" style="margin-right: 8px;" onchange="handleParallelProcessingChange()">
                                 Enable Parallel Processing
                             </label>
                             <small style="color: #666; display: block; margin-top: 5px;">
-                                Process multiple URLs concurrently (3-5x faster crawling) - Coming soon
+                                Process multiple URLs concurrently (3-5x faster crawling)
+                            </small>
+                        </div>
+
+                        <div class="form-group" id="max_concurrent_group" style="display: none;">
+                            <label for="max_concurrent">Number of Concurrent URLs</label>
+                            <select id="max_concurrent" name="max_concurrent" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 16px;">
+                                <option value="1">1 (Sequential - Default)</option>
+                                <option value="2">2 URLs at once</option>
+                                <option value="3" selected>3 URLs at once (Recommended)</option>
+                                <option value="4">4 URLs at once</option>
+                                <option value="5">5 URLs at once (Fast)</option>
+                                <option value="10">10 URLs at once (Very Fast)</option>
+                            </select>
+                            <small style="color: #666; display: block; margin-top: 5px;">
+                                Higher = faster, but uses more resources. Start with 3 for best balance.
                             </small>
                         </div>
 
@@ -915,7 +930,18 @@
                 });
             }
         });
-        
+
+        function handleParallelProcessingChange() {
+            const checkbox = document.getElementById('enable_parallel_processing');
+            const maxConcurrentGroup = document.getElementById('max_concurrent_group');
+
+            if (checkbox.checked) {
+                maxConcurrentGroup.style.display = 'block';
+            } else {
+                maxConcurrentGroup.style.display = 'none';
+            }
+        }
+
         function handleKnowledgeBaseModeChange() {
             const mode = document.getElementById('knowledge_base_mode').value;
             const selectGroup = document.getElementById('knowledgeBaseSelectGroup');
@@ -1203,6 +1229,8 @@
             const enableConnectionPooling = document.getElementById('enable_connection_pooling').checked;
             const enableRetry = document.getElementById('enable_retry').checked;
             const enableCircuitBreaker = document.getElementById('enable_circuit_breaker').checked;
+            const enableParallelProcessing = document.getElementById('enable_parallel_processing').checked;
+            const maxConcurrent = enableParallelProcessing ? parseInt(document.getElementById('max_concurrent').value) : 1;
 
             const formData = {
                 url: document.getElementById('url').value,
@@ -1226,7 +1254,8 @@
                 // Performance settings
                 enable_connection_pooling: enableConnectionPooling,
                 enable_retry: enableRetry,
-                enable_circuit_breaker: enableCircuitBreaker
+                enable_circuit_breaker: enableCircuitBreaker,
+                max_concurrent: maxConcurrent
             };
             
             // Clear previous logs and reset basic view
