@@ -57,8 +57,8 @@ class QueueHandler(logging.Handler):
         except Exception:
             self.handleError(record)
 
-def run_async_crawl(url, max_pages, max_depth, api_key, base_url, llm_api_key, extraction_model, naming_model=None, knowledge_base_mode='automatic', selected_knowledge_base=None, enable_dual_mode=True, dual_mode_type='threshold', word_threshold=4000, use_intelligent_mode=False, intelligent_analysis_model='gemini/gemini-1.5-flash', manual_mode=None, custom_llm_base_url=None, custom_llm_api_key=None):
-    """Run the async crawl in a separate thread with dual-model and dual-mode support."""
+def run_async_crawl(url, max_pages, max_depth, api_key, base_url, llm_api_key, extraction_model, naming_model=None, knowledge_base_mode='automatic', selected_knowledge_base=None, enable_dual_mode=True, dual_mode_type='threshold', word_threshold=4000, use_intelligent_mode=False, intelligent_analysis_model='gemini/gemini-1.5-flash', manual_mode=None, custom_llm_base_url=None, custom_llm_api_key=None, enable_connection_pooling=True, enable_retry=True, enable_circuit_breaker=True):
+    """Run the async crawl in a separate thread with dual-model, dual-mode, and performance settings support."""
     global current_task, current_loop
     
     # Create new event loop for this thread
@@ -173,7 +173,11 @@ def run_async_crawl(url, max_pages, max_depth, api_key, base_url, llm_api_key, e
             intelligent_analysis_model=intelligent_analysis_model,
             manual_mode=manual_mode,
             custom_llm_base_url=custom_llm_base_url,
-            custom_llm_api_key=custom_llm_api_key
+            custom_llm_api_key=custom_llm_api_key,
+            # Performance settings
+            enable_connection_pooling=enable_connection_pooling,
+            enable_retry=enable_retry,
+            enable_circuit_breaker=enable_circuit_breaker
         )
 
         # Setup logging to capture logs and send to UI queue
@@ -284,7 +288,12 @@ def start_crawl():
     # Custom LLM parameters
     custom_llm_base_url = data.get('custom_llm_base_url', None)
     custom_llm_api_key = data.get('custom_llm_api_key', None)
-    
+
+    # Performance settings
+    enable_connection_pooling = data.get('enable_connection_pooling', True)
+    enable_retry = data.get('enable_retry', True)
+    enable_circuit_breaker = data.get('enable_circuit_breaker', True)
+
     if not url:
         return jsonify({
             'status': 'error',
@@ -317,7 +326,7 @@ def start_crawl():
     with task_lock:
         current_task = threading.Thread(
             target=run_async_crawl,
-            args=(url, max_pages, max_depth, api_key, base_url, llm_api_key, extraction_model, naming_model, knowledge_base_mode, selected_knowledge_base, enable_dual_mode, dual_mode_type, word_threshold, use_intelligent_mode, intelligent_analysis_model, manual_mode, custom_llm_base_url, custom_llm_api_key)
+            args=(url, max_pages, max_depth, api_key, base_url, llm_api_key, extraction_model, naming_model, knowledge_base_mode, selected_knowledge_base, enable_dual_mode, dual_mode_type, word_threshold, use_intelligent_mode, intelligent_analysis_model, manual_mode, custom_llm_base_url, custom_llm_api_key, enable_connection_pooling, enable_retry, enable_circuit_breaker)
         )
         current_task.start()
     

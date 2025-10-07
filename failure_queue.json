@@ -1,9 +1,0 @@
-[
-  {
-    "url": "failed_url",
-    "error": "Test error",
-    "timestamp": "2025-10-06T22:57:35.447173",
-    "retry_count": 0,
-    "metadata": {}
-  }
-]

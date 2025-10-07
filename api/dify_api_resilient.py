@@ -26,13 +26,39 @@ class ResilientDifyAPI:
         api_key: Optional[str] = None,
         enable_retry: bool = True,
         enable_circuit_breaker: bool = True,
-        retry_config: Optional[RetryConfig] = None
+        retry_config: Optional[RetryConfig] = None,
+        enable_connection_pooling: bool = True
     ):
         self.base_url = base_url
-        self.headers = {
-            'Authorization': f'Bearer {api_key}',
-            'Content-Type': 'application/json'
-        }
+        self.enable_connection_pooling = enable_connection_pooling
+
+        # Connection pooling: Create persistent session for connection reuse
+        if enable_connection_pooling:
+            self.session = requests.Session()
+            self.session.headers.update({
+                'Authorization': f'Bearer {api_key}',
+                'Content-Type': 'application/json'
+            })
+
+            # Configure connection pool adapter
+            adapter = requests.adapters.HTTPAdapter(
+                pool_connections=10,  # Number of connection pools to cache
+                pool_maxsize=20,      # Max connections per pool
+                max_retries=0,        # Retries handled by @with_retry decorator
+                pool_block=False      # Don't block if pool is full
+            )
+            self.session.mount('http://', adapter)
+            self.session.mount('https://', adapter)
+
+            logger.info("🔗 Connection pooling enabled (max pool size: 20)")
+        else:
+            # Fallback to non-pooled requests (backward compatibility)
+            self.session = None
+            self.headers = {
+                'Authorization': f'Bearer {api_key}',
+                'Content-Type': 'application/json'
+            }
+            logger.info("Connection pooling disabled (using direct requests)")
 
         # Resilience configuration
         self.enable_retry = enable_retry
@@ -67,16 +93,31 @@ class ResilientDifyAPI:
         """Make HTTP request with resilience features"""
 
         def _execute_request():
-            if method.upper() == 'GET':
-                response = requests.get(url, headers=self.headers, params=params)
-            elif method.upper() == 'POST':
-                response = requests.post(url, headers=self.headers, json=json_data)
-            elif method.upper() == 'PATCH':
-                response = requests.patch(url, headers=self.headers, json=json_data)
-            elif method.upper() == 'DELETE':
-                response = requests.delete(url, headers=self.headers)
+            # Use session if connection pooling enabled, otherwise use direct requests
+            if self.enable_connection_pooling and self.session:
+                # Connection pooling: use session for connection reuse
+                if method.upper() == 'GET':
+                    response = self.session.get(url, params=params)
+                elif method.upper() == 'POST':
+                    response = self.session.post(url, json=json_data)
+                elif method.upper() == 'PATCH':
+                    response = self.session.patch(url, json=json_data)
+                elif method.upper() == 'DELETE':
+                    response = self.session.delete(url)
+                else:
+                    raise ValueError(f"Unsupported HTTP method: {method}")
             else:
-                raise ValueError(f"Unsupported HTTP method: {method}")
+                # Fallback: direct requests without pooling
+                if method.upper() == 'GET':
+                    response = requests.get(url, headers=self.headers, params=params)
+                elif method.upper() == 'POST':
+                    response = requests.post(url, headers=self.headers, json=json_data)
+                elif method.upper() == 'PATCH':
+                    response = requests.patch(url, headers=self.headers, json=json_data)
+                elif method.upper() == 'DELETE':
+                    response = requests.delete(url, headers=self.headers)
+                else:
+                    raise ValueError(f"Unsupported HTTP method: {method}")
 
             # Raise for HTTP errors (4xx, 5xx)
             response.raise_for_status()
