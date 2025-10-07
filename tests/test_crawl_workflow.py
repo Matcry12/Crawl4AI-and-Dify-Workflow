@@ -102,8 +102,19 @@ class TestCrawlWorkflow:
             kb_id_2 = await workflow.ensure_knowledge_base_exists(test_category)
             assert kb_id == kb_id_2, "KB not reused from cache"
 
+            # Cleanup: Delete the test KB
+            logger.info(f"🧹 Cleaning up test KB: {test_category}")
+            try:
+                delete_response = workflow.dify_api.delete_knowledge_base(kb_id)
+                if delete_response.status_code == 200:
+                    logger.info(f"✅ Test KB deleted successfully")
+                else:
+                    logger.warning(f"⚠️ Failed to delete test KB: {delete_response.status_code}")
+            except Exception as cleanup_error:
+                logger.warning(f"⚠️ Cleanup error: {cleanup_error}")
+
             self.log_test_result("test_2_knowledge_base_creation", True,
-                               f"KB created and cached: {kb_id}")
+                               f"KB created, cached, and cleaned up: {kb_id}")
             return True
 
         except Exception as e:
@@ -418,8 +429,19 @@ class TestCrawlWorkflow:
 
                 logger.info(f"Created/verified {len(metadata_fields)} metadata fields")
 
+                # Cleanup: Delete the test KB
+                logger.info(f"🧹 Cleaning up test KB: {test_kb}")
+                try:
+                    delete_response = workflow.dify_api.delete_knowledge_base(kb_id)
+                    if delete_response.status_code == 200:
+                        logger.info(f"✅ Test KB deleted successfully")
+                    else:
+                        logger.warning(f"⚠️ Failed to delete test KB: {delete_response.status_code}")
+                except Exception as cleanup_error:
+                    logger.warning(f"⚠️ Cleanup error: {cleanup_error}")
+
                 self.log_test_result("test_9_metadata_fields", True,
-                                   f"{len(metadata_fields)} fields verified")
+                                   f"{len(metadata_fields)} fields verified and cleaned up")
                 return True
             else:
                 self.log_test_result("test_9_metadata_fields", False,
@@ -466,6 +488,132 @@ class TestCrawlWorkflow:
             self.log_test_result("test_10_category_normalization", False, str(e))
             return False
 
+    async def test_11_connection_pooling(self):
+        """Test 11: Connection pooling functionality"""
+        logger.info("\n" + "="*80)
+        logger.info("TEST 11: Connection Pooling")
+        logger.info("="*80)
+
+        try:
+            # Test with pooling enabled (default)
+            workflow_with_pool = CrawlWorkflow(
+                dify_base_url=self.dify_base_url,
+                dify_api_key=self.dify_api_key,
+                gemini_api_key=self.gemini_api_key,
+                enable_connection_pooling=True
+            )
+
+            assert workflow_with_pool.dify_api.enable_connection_pooling is True, "Pooling not enabled"
+            assert workflow_with_pool.dify_api.session is not None, "Session not created"
+            logger.info("✓ Pooling enabled: Session created")
+
+            # Test with pooling disabled
+            workflow_no_pool = CrawlWorkflow(
+                dify_base_url=self.dify_base_url,
+                dify_api_key=self.dify_api_key,
+                gemini_api_key=self.gemini_api_key,
+                enable_connection_pooling=False
+            )
+
+            assert workflow_no_pool.dify_api.enable_connection_pooling is False, "Pooling not disabled"
+            assert workflow_no_pool.dify_api.session is None, "Session created when it shouldn't be"
+            assert workflow_no_pool.dify_api.headers is not None, "Headers not set for non-pooled requests"
+            logger.info("✓ Pooling disabled: Using direct requests")
+
+            self.log_test_result("test_11_connection_pooling", True,
+                               "Connection pooling working correctly")
+            return True
+
+        except Exception as e:
+            self.log_test_result("test_11_connection_pooling", False, str(e))
+            return False
+
+    async def test_12_resilience_features(self):
+        """Test 12: Retry and circuit breaker configuration"""
+        logger.info("\n" + "="*80)
+        logger.info("TEST 12: Resilience Features")
+        logger.info("="*80)
+
+        try:
+            # Test with all resilience features enabled
+            workflow_resilient = CrawlWorkflow(
+                dify_base_url=self.dify_base_url,
+                dify_api_key=self.dify_api_key,
+                gemini_api_key=self.gemini_api_key,
+                enable_retry=True,
+                enable_circuit_breaker=True
+            )
+
+            assert workflow_resilient.dify_api.enable_retry is True, "Retry not enabled"
+            assert workflow_resilient.dify_api.enable_circuit_breaker is True, "Circuit breaker not enabled"
+            assert len(workflow_resilient.dify_api.circuit_breakers) > 0, "No circuit breakers created"
+            logger.info(f"✓ Resilience enabled: {len(workflow_resilient.dify_api.circuit_breakers)} circuit breakers")
+
+            # Test with resilience disabled
+            workflow_no_resilience = CrawlWorkflow(
+                dify_base_url=self.dify_base_url,
+                dify_api_key=self.dify_api_key,
+                gemini_api_key=self.gemini_api_key,
+                enable_retry=False,
+                enable_circuit_breaker=False
+            )
+
+            assert workflow_no_resilience.dify_api.enable_retry is False, "Retry not disabled"
+            assert workflow_no_resilience.dify_api.enable_circuit_breaker is False, "Circuit breaker not disabled"
+            logger.info("✓ Resilience disabled correctly")
+
+            # Test retry config
+            assert workflow_resilient.dify_api.retry_config is not None, "Retry config not set"
+            assert workflow_resilient.dify_api.retry_config.max_attempts >= 3, "Max attempts too low"
+            logger.info(f"✓ Retry config: {workflow_resilient.dify_api.retry_config.max_attempts} max attempts")
+
+            self.log_test_result("test_12_resilience_features", True,
+                               "Retry and circuit breaker working")
+            return True
+
+        except Exception as e:
+            self.log_test_result("test_12_resilience_features", False, str(e))
+            return False
+
+    async def test_13_manual_mode(self):
+        """Test 13: Manual mode selection"""
+        logger.info("\n" + "="*80)
+        logger.info("TEST 13: Manual Mode Selection")
+        logger.info("="*80)
+
+        try:
+            # Test manual full_doc mode
+            workflow_full = CrawlWorkflow(
+                dify_base_url=self.dify_base_url,
+                dify_api_key=self.dify_api_key,
+                gemini_api_key=self.gemini_api_key,
+                enable_dual_mode=True,
+                manual_mode='full_doc'
+            )
+
+            assert workflow_full.manual_mode == 'full_doc', "Manual mode not set to full_doc"
+            logger.info("✓ Manual mode: full_doc")
+
+            # Test manual paragraph mode
+            workflow_para = CrawlWorkflow(
+                dify_base_url=self.dify_base_url,
+                dify_api_key=self.dify_api_key,
+                gemini_api_key=self.gemini_api_key,
+                enable_dual_mode=True,
+                manual_mode='paragraph'
+            )
+
+            assert workflow_para.manual_mode == 'paragraph', "Manual mode not set to paragraph"
+            logger.info("✓ Manual mode: paragraph")
+
+            self.log_test_result("test_13_manual_mode", True,
+                               "Manual mode selection working")
+            return True
+
+        except Exception as e:
+            self.log_test_result("test_13_manual_mode", False, str(e))
+            return False
+
     async def run_all_tests(self):
         """Run all tests"""
         logger.info("\n" + "#"*80)
@@ -483,6 +631,9 @@ class TestCrawlWorkflow:
             self.test_8_dual_mode_selection,
             self.test_9_metadata_fields,
             self.test_10_category_normalization,
+            self.test_11_connection_pooling,
+            self.test_12_resilience_features,
+            self.test_13_manual_mode,
         ]
 
         for test in tests:
