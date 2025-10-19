@@ -374,6 +374,62 @@ class PageProcessor:
 
         return saved_count
 
+    async def save_documents_batch(
+        self,
+        documents: List[Dict],
+        source_url: str,
+        source_domain: Optional[str] = None
+    ) -> Dict:
+        """
+        Save pre-created documents directly to database.
+        This is used by unified_pipeline.py which creates documents separately.
+
+        Args:
+            documents: List of documents with embeddings
+            source_url: Source URL
+            source_domain: Source domain (extracted from URL if not provided)
+
+        Returns:
+            Dict with save statistics
+        """
+        logger.info(f"Saving {len(documents)} documents to database...")
+
+        # Extract domain if not provided
+        if not source_domain:
+            from urllib.parse import urlparse
+            source_domain = urlparse(source_url).netloc
+
+        # Step 1: Generate embeddings
+        logger.info("Step 1: Generating embeddings...")
+        documents_with_embeddings = self._generate_embeddings(documents)
+
+        # Step 2: Save to database
+        logger.info("Step 2: Saving to database...")
+        saved_count = self._save_to_database(
+            documents_with_embeddings,
+            source_url,
+            source_domain
+        )
+
+        # Get mode distribution
+        mode_distribution = {}
+        for doc in documents:
+            mode = doc.get('mode', doc['stats']['mode'])
+            mode_distribution[mode] = mode_distribution.get(mode, 0) + 1
+
+        result = {
+            'success': saved_count > 0,
+            'documents_created': len(documents),
+            'documents_saved': saved_count,
+            'mode_distribution': mode_distribution,
+            'source_url': source_url,
+            'source_domain': source_domain
+        }
+
+        logger.info(f"Save complete: {saved_count}/{len(documents)} documents saved")
+
+        return result
+
     def get_database_stats(self) -> Dict:
         """
         Get statistics from the database.
