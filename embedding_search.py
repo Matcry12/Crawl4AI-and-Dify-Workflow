@@ -108,12 +108,13 @@ class EmbeddingSearcher:
                     "description": "...",
                     "category": "..."
                 }
-            existing_documents: List of existing documents
+            existing_documents: List of existing documents from database
                 [
                     {
                         "id": "doc_1",
                         "title": "...",
-                        "summary": "...",
+                        "content": "...",
+                        "embedding": [0.1, 0.2, ...],  # Pre-computed embedding
                         "category": "..."
                     }
                 ]
@@ -136,10 +137,17 @@ class EmbeddingSearcher:
         results = []
 
         for doc in existing_documents:
-            # Create embedding for existing document
-            doc_embedding = self.create_embedding(doc['summary'])
-            if not doc_embedding:
-                continue
+            # Use pre-computed embedding if available, otherwise create new one
+            if 'embedding' in doc and doc['embedding']:
+                doc_embedding = doc['embedding']
+            else:
+                # Fallback: create embedding from summary or content
+                text = doc.get('summary') or doc.get('content', '')
+                if not text:
+                    continue
+                doc_embedding = self.create_embedding(text)
+                if not doc_embedding:
+                    continue
 
             # Calculate similarity
             similarity = self.calculate_similarity(new_embedding, doc_embedding)

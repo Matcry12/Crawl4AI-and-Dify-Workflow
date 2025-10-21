@@ -41,6 +41,28 @@ class DocumentCreator:
 
         print("✅ Document creator initialized")
         print(f"   Model: gemini-2.5-flash-lite")
+        print(f"   Embedding model: text-embedding-004")
+
+    def create_embedding(self, text: str) -> list:
+        """
+        Create embedding for text using Gemini
+
+        Args:
+            text: Text to embed (typically content or summary)
+
+        Returns:
+            768-dimensional embedding vector
+        """
+        try:
+            result = genai.embed_content(
+                model="models/text-embedding-004",
+                content=text,
+                task_type="retrieval_document"
+            )
+            return result['embedding']
+        except Exception as e:
+            print(f"  ⚠️  Embedding generation failed: {e}")
+            return None
 
     def create_paragraph_document(self, topic: Dict) -> Dict:
         """
@@ -78,11 +100,21 @@ Output only the paragraph text, nothing else.
             response = self.model.generate_content(prompt)
             content = response.text.strip()
 
+            # Generate embedding for the content
+            print(f"  🔢 Generating embedding...")
+            embedding = self.create_embedding(content)
+
+            # Create document ID
+            safe_title = topic['title'].lower().replace(' ', '_').replace(':', '').replace('/', '_')
+            doc_id = f"{safe_title}_paragraph"
+
             document = {
+                "id": doc_id,
                 "title": topic['title'],
                 "category": topic['category'],
                 "mode": "paragraph",
                 "content": content,
+                "embedding": embedding,  # Add embedding!
                 "created_at": datetime.now().isoformat(),
                 "source_topic": {
                     "title": topic['title'],
@@ -90,7 +122,8 @@ Output only the paragraph text, nothing else.
                 }
             }
 
-            print(f"  ✅ Paragraph created ({len(content)} chars)")
+            emb_status = "✓" if embedding else "✗"
+            print(f"  ✅ Paragraph created ({len(content)} chars, embedding: {emb_status})")
             return document
 
         except Exception as e:
@@ -139,11 +172,21 @@ Output the complete markdown document.
             response = self.model.generate_content(prompt)
             content = response.text.strip()
 
+            # Generate embedding for the content
+            print(f"  🔢 Generating embedding...")
+            embedding = self.create_embedding(content)
+
+            # Create document ID
+            safe_title = topic['title'].lower().replace(' ', '_').replace(':', '').replace('/', '_')
+            doc_id = f"{safe_title}_full-doc"
+
             document = {
+                "id": doc_id,
                 "title": topic['title'],
                 "category": topic['category'],
                 "mode": "full-doc",
                 "content": content,
+                "embedding": embedding,  # Add embedding!
                 "created_at": datetime.now().isoformat(),
                 "source_topic": {
                     "title": topic['title'],
@@ -151,7 +194,8 @@ Output the complete markdown document.
                 }
             }
 
-            print(f"  ✅ Full document created ({len(content)} chars)")
+            emb_status = "✓" if embedding else "✗"
+            print(f"  ✅ Full document created ({len(content)} chars, embedding: {emb_status})")
             return document
 
         except Exception as e:
@@ -359,21 +403,86 @@ Output the complete markdown document.
         if save_to_db:
             print(f"\n💾 Saving {len(all_docs)} documents to vector database...")
             try:
-                from document_database import DocumentDatabase
-                db = DocumentDatabase(db_path=db_path)
+                # Check if using PostgreSQL
+                use_postgresql = os.getenv('USE_POSTGRESQL', 'true').lower() == 'true'
+
+                if use_postgresql:
+                    from document_database_docker import DocumentDatabaseDocker
+                    db = DocumentDatabaseDocker()
+                else:
+                    from document_database import DocumentDatabase
+                    db = DocumentDatabase(db_path=db_path)
 
                 success_count = 0
-                for doc in all_docs:
-                    if db.insert_document(doc):
-                        success_count += 1
+                skipped_count = 0
+                updated_count = 0
 
-                print(f"  ✅ Saved {success_count}/{len(all_docs)} documents to database")
+                for doc in all_docs:
+                    # Check if document already exists
+                    existing = db.get_document(doc['id'])
+
+                    if existing:
+                        # Document exists - check if we should update
+                        if doc.get('embedding') and not existing.get('embedding'):
+                            # New document has embedding but existing doesn't - update
+                            print(f"  🔄 Updating {doc['id']} (adding embedding)")
+                            if use_postgresql:
+                                # For PostgreSQL, we need to use update logic
+                                # This is handled by ON CONFLICT in create_document
+                                if db.create_document(
+                                    doc_id=doc['id'],
+                                    title=doc['title'],
+                                    content=doc['content'],
+                                    category=doc.get('category'),
+                                    mode=doc.get('mode'),
+                                    embedding=doc.get('embedding'),
+                                    metadata=doc.get('source_topic', {})
+                                ):
+                                    updated_count += 1
+                            else:
+                                # SQLite update
+                                db.update_document(doc['id'], embedding=doc['embedding'])
+                                updated_count += 1
+                        else:
+                            # Document exists and no update needed
+                            print(f"  ⊘ Skipping {doc['id']} (already exists)")
+                            skipped_count += 1
+                    else:
+                        # New document - insert
+                        if use_postgresql:
+                            if db.create_document(
+                                doc_id=doc['id'],
+                                title=doc['title'],
+                                content=doc['content'],
+                                category=doc.get('category'),
+                                mode=doc.get('mode'),
+                                embedding=doc.get('embedding'),
+                                metadata=doc.get('source_topic', {})
+                            ):
+                                success_count += 1
+                        else:
+                            if db.insert_document(doc):
+                                success_count += 1
+
+                print(f"\n  ✅ Saved: {success_count} new documents")
+                if updated_count > 0:
+                    print(f"  🔄 Updated: {updated_count} documents")
+                if skipped_count > 0:
+                    print(f"  ⊘ Skipped: {skipped_count} duplicates")
 
                 # Print statistics
-                db.print_statistics()
+                if hasattr(db, 'print_statistics'):
+                    db.print_statistics()
+                elif hasattr(db, 'get_statistics'):
+                    stats = db.get_statistics()
+                    print(f"\n  📊 Database Statistics:")
+                    print(f"     Total documents: {stats['total_documents']}")
+                    print(f"     With embeddings: {stats['documents_with_embeddings']}")
 
             except Exception as e:
                 print(f"  ❌ Database save error: {e}")
+                import traceback
+                traceback.print_exc()
 
         # Save each document as markdown
         for doc in all_docs:

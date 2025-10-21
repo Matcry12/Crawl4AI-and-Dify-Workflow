@@ -12,6 +12,16 @@ from datetime import datetime
 from typing import Dict, List, Optional
 from enum import Enum
 
+# Database configuration
+USE_POSTGRESQL = os.getenv('USE_POSTGRESQL', 'true').lower() == 'true'
+POSTGRES_CONTAINER = os.getenv('POSTGRES_CONTAINER', 'docker-db-1')
+POSTGRES_DATABASE = os.getenv('POSTGRES_DATABASE', 'crawl4ai')
+
+if USE_POSTGRESQL:
+    print(f"🐘 PostgreSQL enabled (container: {POSTGRES_CONTAINER}, database: {POSTGRES_DATABASE})")
+else:
+    print("📁 SQLite enabled")
+
 
 class NodeStatus(Enum):
     """Status of a workflow node"""
@@ -647,6 +657,46 @@ class WorkflowManager:
         # Node 3: Embedding Search (if enabled and topics were extracted)
         embedding_result = None
         if embedding_search and extract_result:
+            # Load existing documents from database if not provided
+            if existing_documents is None:
+                print(f"\n{'='*80}")
+                print("📚 Loading existing documents from database")
+                print(f"{'='*80}")
+
+                try:
+                    if USE_POSTGRESQL:
+                        from document_database_docker import DocumentDatabaseDocker
+                        db = DocumentDatabaseDocker(
+                            container_name=POSTGRES_CONTAINER,
+                            database=POSTGRES_DATABASE
+                        )
+                        existing_documents = db.list_documents()
+                    else:
+                        from document_database import DocumentDatabase
+                        db = DocumentDatabase(db_path="documents.db")
+                        existing_documents = db.get_all_documents()
+
+                    if existing_documents:
+                        print(f"✅ Loaded {len(existing_documents)} existing documents")
+
+                        # Show breakdown by mode
+                        para_count = sum(1 for doc in existing_documents if doc.get('mode') == 'paragraph')
+                        full_count = sum(1 for doc in existing_documents if doc.get('mode') == 'full-doc')
+                        print(f"   Paragraph mode: {para_count}")
+                        print(f"   Full-doc mode: {full_count}")
+                    else:
+                        print("ℹ️  No existing documents found in database")
+                        existing_documents = []
+
+                except FileNotFoundError:
+                    print("ℹ️  Database file not found - treating as first run")
+                    existing_documents = []
+                except Exception as e:
+                    print(f"⚠️  Could not load existing documents: {e}")
+                    existing_documents = []
+
+                print(f"{'='*80}")
+
             embedding_node = EmbeddingSearchNode()
             self.add_node(embedding_node)
 
@@ -669,6 +719,54 @@ class WorkflowManager:
         if merge_documents and embedding_result:
             # Check if there are topics to merge
             if embedding_result.get('merge_count', 0) > 0:
+                # Load existing documents for merging if not provided
+                if existing_documents_para is None or existing_documents_full is None:
+                    print(f"\n{'='*80}")
+                    print("📚 Loading existing documents for merging")
+                    print(f"{'='*80}")
+
+                    try:
+                        if USE_POSTGRESQL:
+                            from document_database_docker import DocumentDatabaseDocker
+                            db = DocumentDatabaseDocker(
+                                container_name=POSTGRES_CONTAINER,
+                                database=POSTGRES_DATABASE
+                            )
+
+                            # Load paragraph mode documents
+                            if existing_documents_para is None:
+                                existing_documents_para = db.list_documents(mode="paragraph")
+                                print(f"✅ Loaded {len(existing_documents_para)} paragraph mode documents")
+
+                            # Load full-doc mode documents
+                            if existing_documents_full is None:
+                                existing_documents_full = db.list_documents(mode="full-doc")
+                                print(f"✅ Loaded {len(existing_documents_full)} full-doc mode documents")
+                        else:
+                            from document_database import DocumentDatabase
+                            db = DocumentDatabase(db_path="documents.db")
+
+                            # Load paragraph mode documents
+                            if existing_documents_para is None:
+                                existing_documents_para = db.get_all_documents(mode="paragraph")
+                                print(f"✅ Loaded {len(existing_documents_para)} paragraph mode documents")
+
+                            # Load full-doc mode documents
+                            if existing_documents_full is None:
+                                existing_documents_full = db.get_all_documents(mode="full-doc")
+                                print(f"✅ Loaded {len(existing_documents_full)} full-doc mode documents")
+
+                    except FileNotFoundError:
+                        print("ℹ️  Database file not found - cannot merge")
+                        existing_documents_para = []
+                        existing_documents_full = []
+                    except Exception as e:
+                        print(f"⚠️  Could not load documents for merging: {e}")
+                        existing_documents_para = []
+                        existing_documents_full = []
+
+                    print(f"{'='*80}")
+
                 merger_node = DocumentMergerNode()
                 self.add_node(merger_node)
 
@@ -697,7 +795,7 @@ async def main():
     # Run workflow
     await manager.run(
         start_url="https://docs.eosnetwork.com/docs/latest/quick-start/introduction",
-        max_pages=2,  # Reduced for testing (save cost and time)
+        max_pages=1,  # Reduced for testing (save cost and time)
         same_domain_only=True,
         output_dir="bfs_crawled",
         extract_topics=True,

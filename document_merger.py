@@ -85,6 +85,7 @@ Output only the merged paragraph text, nothing else.
             merged_content = response.text.strip()
 
             updated_document = {
+                "id": existing_document.get('id'),  # Preserve document ID
                 "title": existing_document['title'],
                 "category": existing_document.get('category', topic['category']),
                 "mode": "paragraph",
@@ -157,6 +158,7 @@ Output the complete merged markdown document.
             merged_content = response.text.strip()
 
             updated_document = {
+                "id": existing_document.get('id'),  # Preserve document ID
                 "title": existing_document['title'],
                 "category": existing_document.get('category', topic['category']),
                 "mode": "full-doc",
@@ -393,21 +395,66 @@ Output the complete merged markdown document.
         if save_to_db:
             print(f"\n💾 Updating {len(all_docs)} documents in vector database...")
             try:
-                from document_database import DocumentDatabase
-                db = DocumentDatabase(db_path=db_path)
+                # Check if using PostgreSQL
+                use_postgresql = os.getenv('USE_POSTGRESQL', 'true').lower() == 'true'
+
+                if use_postgresql:
+                    from document_database_docker import DocumentDatabaseDocker
+                    db = DocumentDatabaseDocker()
+                else:
+                    from document_database import DocumentDatabase
+                    db = DocumentDatabase(db_path=db_path)
 
                 success_count = 0
                 for doc in all_docs:
-                    if db.update_document(doc):
-                        success_count += 1
+                    # Generate embedding if not present
+                    if 'embedding' not in doc or doc['embedding'] is None:
+                        print(f"  📊 Creating embedding for updated: {doc['title']} ({doc['mode']})")
+                        try:
+                            import google.generativeai as genai
+                            result = genai.embed_content(
+                                model="models/text-embedding-004",
+                                content=doc['content'],
+                                task_type="retrieval_document"
+                            )
+                            doc['embedding'] = result['embedding']
+                        except Exception as e:
+                            print(f"  ⚠️  Embedding generation failed for {doc['title']}: {e}")
+                            doc['embedding'] = None
+
+                    if use_postgresql:
+                        # Use create_document which handles ON CONFLICT DO UPDATE
+                        if db.create_document(
+                            doc_id=doc['id'],
+                            title=doc['title'],
+                            content=doc['content'],
+                            category=doc.get('category'),
+                            mode=doc.get('mode'),
+                            embedding=doc.get('embedding'),
+                            metadata=doc.get('merged_topics', {})
+                        ):
+                            print(f"  ✅ Document updated: {doc['id']}")
+                            success_count += 1
+                    else:
+                        # SQLite update
+                        if db.update_document(doc):
+                            success_count += 1
 
                 print(f"  ✅ Updated {success_count}/{len(all_docs)} documents in database")
 
                 # Print statistics
-                db.print_statistics()
+                if hasattr(db, 'print_statistics'):
+                    db.print_statistics()
+                elif hasattr(db, 'get_statistics'):
+                    stats = db.get_statistics()
+                    print(f"\n  📊 Database Statistics:")
+                    print(f"     Total documents: {stats['total_documents']}")
+                    print(f"     With embeddings: {stats['documents_with_embeddings']}")
 
             except Exception as e:
                 print(f"  ❌ Database update error: {e}")
+                import traceback
+                traceback.print_exc()
 
         # Save each document as markdown
         for doc in all_docs:
