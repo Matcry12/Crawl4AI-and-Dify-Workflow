@@ -18,6 +18,7 @@ os.environ['GRPC_VERBOSITY'] = 'ERROR'
 os.environ['GLOG_minloglevel'] = '2'
 
 import google.generativeai as genai
+from utils.rate_limiter import get_llm_rate_limiter
 
 load_dotenv()
 
@@ -42,6 +43,9 @@ class TopicExtractor:
         genai.configure(api_key=self.api_key)
         # Using gemini-2.5-flash-lite - cheapest option
         self.model = genai.GenerativeModel('gemini-2.5-flash-lite')
+
+        # Rate limiter
+        self.llm_limiter = get_llm_rate_limiter()
 
         print("✅ Topic extractor initialized")
 
@@ -412,6 +416,7 @@ Return ONLY the JSON array with 2-4 HIGH-QUALITY, DISTINCT topics:"""
             prompt = self.create_extraction_prompt(markdown_content, url)
 
             # Call Gemini with temperature to reduce randomness
+            self.llm_limiter.wait_if_needed()
             response = self.model.generate_content(
                 prompt,
                 generation_config=genai.types.GenerationConfig(
@@ -580,6 +585,63 @@ Return ONLY the JSON array with 2-4 HIGH-QUALITY, DISTINCT topics:"""
 
             # Brief pause to avoid rate limiting
             await asyncio.sleep(1)
+
+        # CROSS-PAGE DEDUPLICATION
+        # After extracting from all pages, check for duplicate topics across different URLs
+        if len(all_topics) > 1:
+            print("\n" + "=" * 80)
+            print("🔍 Cross-Page Deduplication")
+            print("=" * 80)
+            print("Checking for similar topics across different pages...")
+
+            # Collect all topics with their source URLs
+            all_topics_with_urls = []
+            for url, topics in all_topics.items():
+                for topic in topics:
+                    all_topics_with_urls.append({'topic': topic, 'url': url})
+
+            before_count = len(all_topics_with_urls)
+
+            # Deduplicate across all pages
+            deduplicated_with_urls = []
+            for item in all_topics_with_urls:
+                topic = item['topic']
+                url = item['url']
+                merged = False
+
+                for i, existing_item in enumerate(deduplicated_with_urls):
+                    existing_topic = existing_item['topic']
+                    similarity = self.check_topic_similarity(topic, existing_topic)
+
+                    if similarity > 0.85:  # Same threshold as within-page dedup
+                        print(f"  🔀 Merging cross-page topics (similarity: {similarity:.2f}):")
+                        print(f"     '{existing_topic['title']}' (from {existing_item['url']})")
+                        print(f"     '{topic['title']}' (from {url})")
+
+                        merged_topic = self.merge_similar_topics(existing_topic, topic)
+                        deduplicated_with_urls[i] = {'topic': merged_topic, 'url': existing_item['url']}
+                        merged = True
+                        break
+
+                if not merged:
+                    deduplicated_with_urls.append(item)
+
+            after_count = len(deduplicated_with_urls)
+            merged_count = before_count - after_count
+
+            if merged_count > 0:
+                print(f"\n✅ Merged {merged_count} cross-page duplicate(s)")
+
+                # Rebuild all_topics dictionary with deduplicated topics
+                all_topics = {}
+                for item in deduplicated_with_urls:
+                    url = item['url']
+                    topic = item['topic']
+                    if url not in all_topics:
+                        all_topics[url] = []
+                    all_topics[url].append(topic)
+            else:
+                print(f"\n✅ No cross-page duplicates found")
 
         print("\n" + "=" * 80)
         print(f"✅ Extraction complete!")

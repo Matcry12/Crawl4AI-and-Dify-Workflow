@@ -15,6 +15,8 @@ os.environ['GLOG_minloglevel'] = '2'
 from typing import List, Dict, Optional
 import google.generativeai as genai
 from datetime import datetime
+from hybrid_chunker import HybridChunker
+from utils.rate_limiter import get_llm_rate_limiter, get_embedding_rate_limiter
 
 
 class DocumentMerger:
@@ -38,8 +40,16 @@ class DocumentMerger:
         genai.configure(api_key=self.api_key)
         self.model = genai.GenerativeModel('gemini-2.5-flash-lite')
 
+        # Initialize rate limiters
+        self.llm_limiter = get_llm_rate_limiter()
+        self.embedding_limiter = get_embedding_rate_limiter()
+
+        # Initialize hybrid chunker
+        self.chunker = HybridChunker(api_key=self.api_key)
+
         print("✅ Document merger initialized")
         print(f"   Model: gemini-2.5-flash-lite")
+        print(f"   Hybrid chunker: enabled")
 
     def merge_paragraph_document(
         self,
@@ -81,6 +91,7 @@ Output only the merged paragraph text, nothing else.
         try:
             print(f"\n  🔀 Merging paragraph for: {topic['title']} → {existing_document['title']}")
 
+            self.llm_limiter.wait_if_needed()
             response = self.model.generate_content(prompt)
             merged_content = response.text.strip()
 
@@ -154,6 +165,7 @@ Output the complete merged markdown document.
         try:
             print(f"\n  🔀 Merging full document for: {topic['title']} → {existing_document['title']}")
 
+            self.llm_limiter.wait_if_needed()
             response = self.model.generate_content(prompt)
             merged_content = response.text.strip()
 
@@ -391,65 +403,76 @@ Output the complete merged markdown document.
             # Single mode
             all_docs = results["merged_documents"]
 
-        # Update in vector database if enabled
+        # Apply hybrid chunking and update in database if enabled
         if save_to_db:
-            print(f"\n💾 Updating {len(all_docs)} documents in vector database...")
+            print(f"\n💾 Applying chunking and updating {len(all_docs)} documents...")
             try:
                 # Check if using PostgreSQL
                 use_postgresql = os.getenv('USE_POSTGRESQL', 'true').lower() == 'true'
 
                 if use_postgresql:
-                    from document_database_docker import DocumentDatabaseDocker
-                    db = DocumentDatabaseDocker()
+                    from chunked_document_database import ChunkedDocumentDatabase
+                    db = ChunkedDocumentDatabase()
                 else:
+                    print("  ⚠️  Chunking only supported with PostgreSQL")
                     from document_database import DocumentDatabase
                     db = DocumentDatabase(db_path=db_path)
 
                 success_count = 0
                 for doc in all_docs:
-                    # Generate embedding if not present
-                    if 'embedding' not in doc or doc['embedding'] is None:
-                        print(f"  📊 Creating embedding for updated: {doc['title']} ({doc['mode']})")
-                        try:
-                            import google.generativeai as genai
-                            result = genai.embed_content(
-                                model="models/text-embedding-004",
-                                content=doc['content'],
-                                task_type="retrieval_document"
-                            )
-                            doc['embedding'] = result['embedding']
-                        except Exception as e:
-                            print(f"  ⚠️  Embedding generation failed for {doc['title']}: {e}")
-                            doc['embedding'] = None
+                    print(f"\n  🔪 Applying chunking to merged: {doc['title']} ({doc['mode']})")
 
-                    if use_postgresql:
-                        # Use create_document which handles ON CONFLICT DO UPDATE
-                        if db.create_document(
-                            doc_id=doc['id'],
-                            title=doc['title'],
+                    # Apply hybrid chunking
+                    try:
+                        chunked = self.chunker.chunk_document(
                             content=doc['content'],
-                            category=doc.get('category'),
-                            mode=doc.get('mode'),
-                            embedding=doc.get('embedding'),
-                            metadata=doc.get('merged_topics', {})
-                        ):
-                            print(f"  ✅ Document updated: {doc['id']}")
-                            success_count += 1
-                    else:
-                        # SQLite update
-                        if db.update_document(doc):
-                            success_count += 1
+                            document_id=doc['id'],
+                            title=doc['title'],
+                            mode=doc.get('mode', 'full-doc')
+                        )
 
-                print(f"  ✅ Updated {success_count}/{len(all_docs)} documents in database")
+                        # Add chunks to document
+                        doc['chunks'] = chunked
+
+                        # Summary from chunks
+                        if 'document_summary' in chunked:
+                            doc['summary'] = chunked['document_summary']
+
+                        print(f"     ✅ Chunked: {len(chunked.get('sections', []))} sections, " +
+                              f"{sum(len(s.get('propositions', [])) for s in chunked.get('sections', []))} propositions")
+
+                    except Exception as e:
+                        print(f"     ⚠️  Chunking failed: {e}")
+                        doc['chunks'] = None
+
+                    # Save to database with chunks
+                    if use_postgresql and doc.get('chunks'):
+                        # Use insert_document which handles ON CONFLICT DO UPDATE
+                        try:
+                            result = db.insert_document(doc)
+                            if result:
+                                print(f"  ✅ Document updated with chunks: {doc['id']}")
+                                success_count += 1
+                        except Exception as e:
+                            print(f"  ❌ Failed to update {doc['id']}: {e}")
+                    else:
+                        # Fallback: update without chunks (old database)
+                        if hasattr(db, 'update_document'):
+                            if db.update_document(doc):
+                                success_count += 1
+
+                print(f"\n  ✅ Updated {success_count}/{len(all_docs)} documents in database")
 
                 # Print statistics
-                if hasattr(db, 'print_statistics'):
-                    db.print_statistics()
-                elif hasattr(db, 'get_statistics'):
-                    stats = db.get_statistics()
-                    print(f"\n  📊 Database Statistics:")
-                    print(f"     Total documents: {stats['total_documents']}")
-                    print(f"     With embeddings: {stats['documents_with_embeddings']}")
+                if use_postgresql:
+                    try:
+                        stats = db.get_document_stats()
+                        print(f"\n  📊 Database Statistics:")
+                        print(f"     Total documents: {stats.get('documents', 0)}")
+                        print(f"     Total sections: {stats.get('sections', 0)}")
+                        print(f"     Total propositions: {stats.get('propositions', 0)}")
+                    except:
+                        pass
 
             except Exception as e:
                 print(f"  ❌ Database update error: {e}")

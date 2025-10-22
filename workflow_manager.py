@@ -188,8 +188,16 @@ class EmbeddingSearchNode(WorkflowNode):
             description="Search for similar documents using embeddings"
         )
 
-    async def execute(self, extract_result: Dict, existing_documents: List[Dict] = None) -> Dict:
-        """Execute embedding search"""
+    async def execute(self, extract_result: Dict, existing_documents: List[Dict] = None, mode_filter: str = None) -> Dict:
+        """
+        Execute embedding search
+
+        Args:
+            extract_result: Result from topic extraction
+            existing_documents: List of existing documents to compare against
+            mode_filter: Optional mode filter ("paragraph" or "full-doc")
+                        If specified, only compare with documents of this mode
+        """
         from embedding_search import EmbeddingSearcher
 
         self.start()
@@ -215,14 +223,16 @@ class EmbeddingSearchNode(WorkflowNode):
                 all_topics.extend(topics)
 
             print(f"📋 Processing {len(all_topics)} topics")
+            if mode_filter:
+                print(f"   Mode Filter: {mode_filter}")
 
             # Use empty list if no existing documents provided
             if existing_documents is None:
                 existing_documents = []
                 print("ℹ️  No existing documents provided - all topics will be marked for creation")
 
-            # Process topics
-            results = searcher.batch_process_topics(all_topics, existing_documents)
+            # Process topics with mode filter
+            results = searcher.batch_process_topics(all_topics, existing_documents, mode_filter=mode_filter)
 
             # Prepare result summary
             result = {
@@ -231,7 +241,8 @@ class EmbeddingSearchNode(WorkflowNode):
                 'merge_count': len(results['merge']),
                 'create_count': len(results['create']),
                 'verify_count': len(results['verify']),
-                'llm_calls_saved': len(results['merge']) + len(results['create'])
+                'llm_calls_saved': len(results['merge']) + len(results['create']),
+                'mode_filter': mode_filter
             }
 
             self.complete(result)
@@ -304,18 +315,42 @@ class DocumentCreatorNode(WorkflowNode):
             print(f"📋 Creating documents for {len(create_topics)} topics")
             print(f"   Mode: {mode.upper()}")
 
-            # Create documents based on mode
+            # Create documents based on mode (chunking happens automatically!)
             if mode == "both":
                 doc_results = creator.create_documents_both_modes(create_topics)
+                all_documents = doc_results['paragraph_documents'] + doc_results['fulldoc_documents']
             elif mode == "paragraph":
                 doc_results = creator.create_documents_batch(create_topics, mode="paragraph")
+                all_documents = doc_results['documents']
             elif mode == "full-doc":
                 doc_results = creator.create_documents_batch(create_topics, mode="full-doc")
+                all_documents = doc_results['documents']
             else:
                 raise ValueError(f"Invalid mode: {mode}")
 
-            # Save documents (to files and database)
-            creator.save_documents(doc_results, output_dir="documents", save_to_db=True, db_path="documents.db")
+            # Save to CHUNKED database (PostgreSQL with 3-level hierarchy)
+            if USE_POSTGRESQL:
+                from chunked_document_database import ChunkedDocumentDatabase
+
+                print("\n💾 Saving documents with chunks to PostgreSQL...")
+                try:
+                    chunked_db = ChunkedDocumentDatabase()
+                    db_result = chunked_db.insert_documents_batch(all_documents)
+
+                    print(f"   ✅ Saved: {db_result['success_count']}/{db_result['total']} documents to chunked database")
+                    if db_result['failed_docs']:
+                        print(f"   ⚠️  Failed: {', '.join(db_result['failed_docs'])}")
+                except Exception as e:
+                    print(f"   ❌ Chunked database save failed: {e}")
+                    print(f"   ℹ️  Documents created but not saved to database")
+                    import traceback
+                    traceback.print_exc()
+            else:
+                # SQLite mode: Save to file only (old database schema incompatible with chunks)
+                print("\n💾 Saving documents to files (SQLite not supported for chunked documents)...")
+                print(f"   ℹ️  To enable chunked database storage, set USE_POSTGRESQL=true in .env")
+                # Save to files only
+                creator.save_documents(doc_results, output_dir="documents", save_to_db=False)
 
             # Prepare result
             result = {
@@ -700,7 +735,49 @@ class WorkflowManager:
             embedding_node = EmbeddingSearchNode()
             self.add_node(embedding_node)
 
-            embedding_result = await embedding_node.execute(extract_result, existing_documents)
+            # IMPORTANT: When document_mode="both", we need to run embedding search TWICE
+            # - Once for paragraph mode (compare with paragraph documents only)
+            # - Once for full-doc mode (compare with full-doc documents only)
+            # This prevents cross-mode merging (paragraph topic merging with full-doc document)
+
+            if document_mode == "both":
+                print(f"\n{'='*80}")
+                print("🔀 DUAL-MODE EMBEDDING SEARCH")
+                print("   Running separate searches for paragraph and full-doc modes")
+                print(f"{'='*80}")
+
+                # Search for paragraph mode
+                embedding_result_para = await embedding_node.execute(extract_result, existing_documents, mode_filter="paragraph")
+
+                # Search for full-doc mode
+                embedding_result_full = await embedding_node.execute(extract_result, existing_documents, mode_filter="full-doc")
+
+                # Combine results - use paragraph as base and add full-doc info
+                embedding_result = {
+                    'results': {
+                        'merge': embedding_result_para['results']['merge'] + embedding_result_full['results']['merge'],
+                        'create': embedding_result_para['results']['create'],  # CREATE only needs one set
+                        'verify': embedding_result_para['results']['verify'] + embedding_result_full['results']['verify']
+                    },
+                    'total_topics': embedding_result_para['total_topics'],
+                    'merge_count': embedding_result_para['merge_count'] + embedding_result_full['merge_count'],
+                    'create_count': embedding_result_para['create_count'],
+                    'verify_count': embedding_result_para['verify_count'] + embedding_result_full['verify_count'],
+                    'llm_calls_saved': embedding_result_para['llm_calls_saved'] + embedding_result_full['llm_calls_saved'],
+                    'mode_filter': 'both',
+                    'para_result': embedding_result_para,
+                    'full_result': embedding_result_full
+                }
+
+                print(f"\n📊 Combined Results:")
+                print(f"   Paragraph mode merges: {embedding_result_para['merge_count']}")
+                print(f"   Full-doc mode merges: {embedding_result_full['merge_count']}")
+                print(f"   Total merges: {embedding_result['merge_count']}")
+                print(f"   Creates: {embedding_result['create_count']}")
+            else:
+                # Single mode - simple search
+                mode_filter_for_search = document_mode
+                embedding_result = await embedding_node.execute(extract_result, existing_documents, mode_filter=mode_filter_for_search)
 
             # Print status after embedding search
             self.print_status()

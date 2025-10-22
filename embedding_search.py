@@ -95,7 +95,8 @@ class EmbeddingSearcher:
     def find_similar_documents(
         self,
         new_topic: Dict,
-        existing_documents: List[Dict]
+        existing_documents: List[Dict],
+        mode_filter: str = None
     ) -> List[Tuple[Dict, float, str]]:
         """
         Find similar documents and determine action for each
@@ -115,9 +116,12 @@ class EmbeddingSearcher:
                         "title": "...",
                         "content": "...",
                         "embedding": [0.1, 0.2, ...],  # Pre-computed embedding
-                        "category": "..."
+                        "category": "...",
+                        "mode": "paragraph" or "full-doc"
                     }
                 ]
+            mode_filter: Optional mode to filter documents by ("paragraph" or "full-doc")
+                        If specified, only compare with documents of this mode
 
         Returns:
             List of (document, similarity, action) tuples
@@ -126,7 +130,16 @@ class EmbeddingSearcher:
         if not existing_documents:
             return [(None, 0.0, "create")]
 
-        print(f"\n  🔍 Searching for similar documents to: {new_topic['title']}")
+        # Filter documents by mode if specified
+        if mode_filter:
+            filtered_docs = [doc for doc in existing_documents if doc.get('mode') == mode_filter]
+            if not filtered_docs:
+                print(f"\n  ℹ️  No existing documents with mode '{mode_filter}' - will CREATE")
+                return [(None, 0.0, "create")]
+            existing_documents = filtered_docs
+            print(f"\n  🔍 Searching for similar documents to: {new_topic['title']} (mode: {mode_filter})")
+        else:
+            print(f"\n  🔍 Searching for similar documents to: {new_topic['title']}")
 
         # Create embedding for new topic (use summary for embedding)
         new_embedding = self.create_embedding(new_topic['summary'])
@@ -175,7 +188,8 @@ class EmbeddingSearcher:
     def process_topic(
         self,
         new_topic: Dict,
-        existing_documents: List[Dict]
+        existing_documents: List[Dict],
+        mode_filter: str = None
     ) -> Dict:
         """
         Process a single topic and determine what to do
@@ -183,6 +197,7 @@ class EmbeddingSearcher:
         Args:
             new_topic: New topic to process
             existing_documents: List of existing documents
+            mode_filter: Optional mode to filter documents by ("paragraph" or "full-doc")
 
         Returns:
             Decision dictionary:
@@ -197,10 +212,12 @@ class EmbeddingSearcher:
         print(f"\n{'='*80}")
         print(f"📋 Processing: {new_topic['title']}")
         print(f"   Category: {new_topic['category']}")
+        if mode_filter:
+            print(f"   Mode Filter: {mode_filter}")
         print(f"{'='*80}")
 
         # Find similar documents
-        results = self.find_similar_documents(new_topic, existing_documents)
+        results = self.find_similar_documents(new_topic, existing_documents, mode_filter=mode_filter)
 
         if not results or results[0][1] == 0.0:
             # No existing documents or no similarity
@@ -261,7 +278,8 @@ class EmbeddingSearcher:
     def batch_process_topics(
         self,
         new_topics: List[Dict],
-        existing_documents: List[Dict]
+        existing_documents: List[Dict],
+        mode_filter: str = None
     ) -> Dict:
         """
         Process multiple topics and generate summary
@@ -269,12 +287,15 @@ class EmbeddingSearcher:
         Args:
             new_topics: List of new topics
             existing_documents: List of existing documents
+            mode_filter: Optional mode to filter documents by ("paragraph" or "full-doc")
 
         Returns:
             Summary dictionary with statistics
         """
         print(f"\n{'='*80}")
         print(f"🔄 BATCH PROCESSING: {len(new_topics)} topics")
+        if mode_filter:
+            print(f"   Mode Filter: {mode_filter}")
         print(f"{'='*80}")
 
         results = {
@@ -285,7 +306,7 @@ class EmbeddingSearcher:
 
         for i, topic in enumerate(new_topics, 1):
             print(f"\n[{i}/{len(new_topics)}]")
-            decision = self.process_topic(topic, existing_documents)
+            decision = self.process_topic(topic, existing_documents, mode_filter=mode_filter)
             results[decision['action']].append({
                 "topic": topic,
                 "decision": decision

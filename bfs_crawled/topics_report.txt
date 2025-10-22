@@ -1,0 +1,48 @@
+================================================================================
+📚 TOPICS EXTRACTION REPORT
+================================================================================
+
+Generated: 2025-10-22 23:04:03
+Total URLs: 1
+Total Topics: 3
+
+================================================================================
+
+
+## [1] https://docs.eosnetwork.com/docs/latest/quick-start/introduction
+Topics found: 3
+--------------------------------------------------------------------------------
+
+### 1. EOS Network: Smart Contract Development with Web IDE
+**Category**: tutorial
+**Summary**: Learn to start coding EOS Network smart contracts immediately using the Web IDE for quick prototyping and testing.
+**Description**: This topic introduces developers to the EOS Network's Web IDE, a browser-based environment for writing, testing, and deploying smart contracts. It emphasizes its utility for rapid development and experimentation before local setup. The Web IDE allows immediate interaction with the blockchain, enabling developers to quickly iterate on contract logic and understand contract behavior without the overhead of local environment configuration. This is the recommended first step for new developers to get hands-on experience with EOS Network smart contract development.
+
+### 2. EOS Network: Local Project Setup with CLI
+**Category**: guide
+**Summary**: Set up a new EOS Network project locally using the command-line interface (CLI) for contract and frontend development.
+**Description**: This guide details how to use the `npm create vaulta@latest myproject` command to initialize a new EOS Network project. It covers the process of following prompts to configure the project, which can result in either a template project or a barebones setup. The generated project includes a simple smart contract, associated tests, deployment scripts, and a choice of frontend frameworks (SvelteKit, Next.js, or Nuxt). This topic is crucial for developers transitioning from the Web IDE to a full local development workflow.
+
+### 3. EOS Network: Core Concepts for Blockchain Understanding
+**Category**: concept
+**Summary**: Gain a foundational understanding of blockchain technology and EOS Network specifics, essential for new developers.
+**Description**: This section provides essential background knowledge for anyone new to blockchain technology or the EOS Network. It covers fundamental concepts such as decentralization, accounts, and resource management within the EOS Network ecosystem. Understanding these core principles is vital for effectively developing, deploying, and interacting with smart contracts and applications on the EOS Network. It serves as a prerequisite for diving deeper into contract development and network operations.
+
+================================================================================
+
+
+📊 TOPICS BY CATEGORY
+================================================================================
+
+**CONCEPT** (1 topics)
+  - EOS Network: Core Concepts for Blockchain Understanding
+
+**GUIDE** (1 topics)
+  - EOS Network: Local Project Setup with CLI
+
+**TUTORIAL** (1 topics)
+  - EOS Network: Smart Contract Development with Web IDE
+
+================================================================================
+✅ Report complete!
+================================================================================

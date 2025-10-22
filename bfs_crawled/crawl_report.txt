@@ -1,0 +1,32 @@
+================================================================================
+📊 BFS CRAWL REPORT
+================================================================================
+
+## Summary
+  Start URL: https://docs.eosnetwork.com/docs/latest/quick-start/introduction
+  Domain: docs.eosnetwork.com
+  Total pages visited: 1
+  Successful: 1
+  Failed: 0
+  Links discovered: 56
+  Pages saved: 1
+
+## Pages by Level
+  Level 0: 1 pages
+
+## Successful Pages
+  1. https://docs.eosnetwork.com/docs/latest/quick-start/introduction
+     Level: 0 | Links: 56 | Size: 7834 chars
+
+## Top Pages by Links Found
+  1. https://docs.eosnetwork.com/docs/latest/quick-start/introduction (56 links)
+
+## Output
+  Directory: bfs_crawled/
+  Markdown files: 1
+  Report: bfs_crawled/crawl_report.txt
+  Data: bfs_crawled/crawl_data.json
+
+================================================================================
+✅ Report generated: 2025-10-22T23:03:56.320505
+================================================================================

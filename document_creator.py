@@ -16,6 +16,8 @@ os.environ['GLOG_minloglevel'] = '2'
 from typing import List, Dict, Optional
 import google.generativeai as genai
 from datetime import datetime
+from hybrid_chunker import HybridChunker
+from utils.rate_limiter import get_llm_rate_limiter, get_embedding_rate_limiter
 
 
 class DocumentCreator:
@@ -39,9 +41,17 @@ class DocumentCreator:
         genai.configure(api_key=self.api_key)
         self.model = genai.GenerativeModel('gemini-2.5-flash-lite')
 
+        # Rate limiters
+        self.llm_limiter = get_llm_rate_limiter()
+        self.embedding_limiter = get_embedding_rate_limiter()
+
+        # Initialize hybrid chunker
+        self.chunker = HybridChunker(api_key=self.api_key)
+
         print("✅ Document creator initialized")
         print(f"   Model: gemini-2.5-flash-lite")
         print(f"   Embedding model: text-embedding-004")
+        print(f"   Hybrid chunker: enabled")
 
     def create_embedding(self, text: str) -> list:
         """
@@ -54,6 +64,7 @@ class DocumentCreator:
             768-dimensional embedding vector
         """
         try:
+            self.embedding_limiter.wait_if_needed()
             result = genai.embed_content(
                 model="models/text-embedding-004",
                 content=text,
@@ -97,6 +108,7 @@ Output only the paragraph text, nothing else.
         try:
             print(f"\n  📝 Creating paragraph document for: {topic['title']}")
 
+            self.llm_limiter.wait_if_needed()
             response = self.model.generate_content(prompt)
             content = response.text.strip()
 
@@ -169,6 +181,7 @@ Output the complete markdown document.
         try:
             print(f"\n  📄 Creating full document for: {topic['title']}")
 
+            self.llm_limiter.wait_if_needed()
             response = self.model.generate_content(prompt)
             content = response.text.strip()
 
@@ -202,28 +215,48 @@ Output the complete markdown document.
             print(f"  ❌ Error creating full document: {e}")
             return None
 
-    def create_document(self, topic: Dict, mode: str = "paragraph") -> Dict:
+    def create_document(self, topic: Dict, mode: str = "paragraph", enable_chunking: bool = True) -> Dict:
         """
         Create document in specified mode
 
         Args:
             topic: Topic dictionary
             mode: "paragraph" or "full-doc"
+            enable_chunking: If True, apply semantic chunking to document
 
         Returns:
-            Document dictionary
+            Document dictionary (with 'chunks' key if enable_chunking=True)
         """
         if mode == "paragraph":
-            return self.create_paragraph_document(topic)
+            document = self.create_paragraph_document(topic)
         elif mode == "full-doc":
-            return self.create_fulldoc_document(topic)
+            document = self.create_fulldoc_document(topic)
         else:
             raise ValueError(f"Invalid mode: {mode}. Use 'paragraph' or 'full-doc'")
+
+        # Apply semantic chunking if enabled
+        if enable_chunking and document:
+            print(f"  🔪 Applying semantic chunking...")
+            try:
+                chunks = self.chunker.chunk_document(
+                    content=document['content'],
+                    document_id=document['id'],
+                    title=document['title'],
+                    mode=mode
+                )
+                document['chunks'] = chunks
+                print(f"  ✅ Chunking complete: {chunks['stats']['total_sections']} sections, {chunks['stats']['total_propositions']} propositions")
+            except Exception as e:
+                print(f"  ⚠️  Chunking failed: {e}")
+                document['chunks'] = None
+
+        return document
 
     def create_documents_batch(
         self,
         topics: List[Dict],
-        mode: str = "paragraph"
+        mode: str = "paragraph",
+        enable_chunking: bool = True
     ) -> Dict:
         """
         Create multiple documents in batch
@@ -231,6 +264,7 @@ Output the complete markdown document.
         Args:
             topics: List of topic dictionaries
             mode: "paragraph" or "full-doc"
+            enable_chunking: If True, apply semantic chunking to each document
 
         Returns:
             Results dictionary with created documents and statistics
@@ -246,7 +280,7 @@ Output the complete markdown document.
         for i, topic in enumerate(topics, 1):
             print(f"\n[{i}/{len(topics)}] Processing: {topic['title']}")
 
-            doc = self.create_document(topic, mode)
+            doc = self.create_document(topic, mode, enable_chunking=enable_chunking)
 
             if doc:
                 documents.append(doc)
@@ -293,17 +327,17 @@ Output the complete markdown document.
             print(f"[{i}/{len(topics)}] Processing: {topic['title']}")
             print(f"{'='*80}")
 
-            # Create paragraph version
+            # Create paragraph version (with chunking)
             print(f"\n  🔹 MODE 1: Paragraph")
-            para_doc = self.create_paragraph_document(topic)
+            para_doc = self.create_document(topic, mode="paragraph", enable_chunking=True)
             if para_doc:
                 paragraph_docs.append(para_doc)
             else:
                 failed.append(f"{topic['title']} (paragraph)")
 
-            # Create full-doc version
+            # Create full-doc version (with chunking)
             print(f"\n  🔹 MODE 2: Full Document")
-            full_doc = self.create_fulldoc_document(topic)
+            full_doc = self.create_document(topic, mode="full-doc", enable_chunking=True)
             if full_doc:
                 fulldoc_docs.append(full_doc)
             else:
@@ -330,14 +364,36 @@ Output the complete markdown document.
         print(f"{'='*80}")
 
         print(f"\n✅ Success: {len(documents)}")
+
+        # Calculate chunk statistics
+        total_sections = 0
+        total_propositions = 0
+        docs_with_chunks = 0
+
         if documents:
             for doc in documents:
-                print(f"   • {doc['title']} ({len(doc['content'])} chars)")
+                has_chunks = 'chunks' in doc and doc['chunks']
+                chunk_info = ""
+                if has_chunks:
+                    docs_with_chunks += 1
+                    stats = doc['chunks']['stats']
+                    total_sections += stats['total_sections']
+                    total_propositions += stats['total_propositions']
+                    chunk_info = f" → {stats['total_sections']} sections, {stats['total_propositions']} props"
+                print(f"   • {doc['title']} ({len(doc['content'])} chars{chunk_info})")
 
         if failed:
             print(f"\n❌ Failed: {len(failed)}")
             for title in failed:
                 print(f"   • {title}")
+
+        if docs_with_chunks > 0:
+            print(f"\n🔪 Chunking Statistics:")
+            print(f"   Documents chunked: {docs_with_chunks}/{len(documents)}")
+            print(f"   Total sections: {total_sections}")
+            print(f"   Total propositions: {total_propositions}")
+            print(f"   Avg sections/doc: {total_sections/docs_with_chunks:.1f}")
+            print(f"   Avg props/doc: {total_propositions/docs_with_chunks:.1f}")
 
         print(f"\n{'='*80}")
 
