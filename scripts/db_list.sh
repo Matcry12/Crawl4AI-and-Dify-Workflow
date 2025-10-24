@@ -4,7 +4,7 @@
 echo "📚 All Documents"
 echo "════════════════════════════════════════════════════════════════"
 
-docker exec docker-db-1 psql -U postgres -d crawl4ai -c "
+docker exec postgres-crawl4ai psql -U postgres -d crawl4ai -c "
 SELECT
     LEFT(d.id, 40) as id,
     LEFT(d.title, 30) as title,

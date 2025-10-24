@@ -21,12 +21,14 @@ class EmbeddingSearcher:
     Uses embeddings to search for similar documents and determine actions
     """
 
-    def __init__(self, api_key: str = None):
+    def __init__(self, api_key: str = None, use_postgres_search: bool = True, db = None):
         """
         Initialize embedding searcher
 
         Args:
             api_key: Gemini API key (defaults to GEMINI_API_KEY env var)
+            use_postgres_search: Use PostgreSQL vector search (200-600x faster) instead of Python
+            db: Database instance (ChunkedDocumentDatabase) for PostgreSQL search
         """
         self.api_key = api_key or os.getenv('GEMINI_API_KEY')
 
@@ -35,12 +37,20 @@ class EmbeddingSearcher:
 
         genai.configure(api_key=self.api_key)
 
+        # PostgreSQL vector search settings
+        self.use_postgres_search = use_postgres_search
+        self.db = db
+
         # Similarity thresholds
         self.MERGE_THRESHOLD = 0.85   # > 0.85: Obvious merge (skip LLM)
         self.CREATE_THRESHOLD = 0.4   # < 0.4: Obvious different (skip LLM)
         # 0.4-0.85: Uncertain, need LLM verification
 
         print("✅ Embedding searcher initialized")
+        if self.use_postgres_search and self.db:
+            print("   🚀 Using PostgreSQL vector search (200-600x faster)")
+        else:
+            print("   🐌 Using Python cosine similarity")
         print(f"   Merge threshold: {self.MERGE_THRESHOLD}")
         print(f"   Create threshold: {self.CREATE_THRESHOLD}")
 
@@ -120,6 +130,7 @@ class EmbeddingSearcher:
                         "mode": "paragraph" or "full-doc"
                     }
                 ]
+                NOTE: Can be empty list when using PostgreSQL mode (queries DB directly)
             mode_filter: Optional mode to filter documents by ("paragraph" or "full-doc")
                         If specified, only compare with documents of this mode
 
@@ -127,9 +138,96 @@ class EmbeddingSearcher:
             List of (document, similarity, action) tuples
             action: "merge", "create", or "verify"
         """
-        if not existing_documents:
+        # Create embedding for new topic (use summary for embedding)
+        new_embedding = self.create_embedding(new_topic['summary'])
+        if not new_embedding:
             return [(None, 0.0, "create")]
 
+        # Use PostgreSQL vector search if enabled and database is available
+        if self.use_postgres_search and self.db:
+            return self._find_similar_documents_postgres(new_topic, new_embedding, mode_filter)
+        else:
+            # Python fallback mode: Check if there are documents to compare
+            if not existing_documents:
+                return [(None, 0.0, "create")]
+            return self._find_similar_documents_python(new_topic, new_embedding, existing_documents, mode_filter)
+
+    def _find_similar_documents_postgres(
+        self,
+        new_topic: Dict,
+        new_embedding: List[float],
+        mode_filter: str = None
+    ) -> List[Tuple[Dict, float, str]]:
+        """
+        Find similar documents using PostgreSQL vector search (200-600x faster)
+
+        Args:
+            new_topic: New topic to process
+            new_embedding: Embedding vector for the new topic
+            mode_filter: Optional mode to filter documents by
+
+        Returns:
+            List of (document, similarity, action) tuples
+        """
+        if mode_filter:
+            print(f"\n  🔍 Searching for similar documents to: {new_topic['title']} (mode: {mode_filter})")
+        else:
+            print(f"\n  🔍 Searching for similar documents to: {new_topic['title']}")
+
+        # Search using PostgreSQL (returns all documents, we'll filter by thresholds)
+        similar_docs = self.db.search_similar_documents(
+            query_embedding=new_embedding,
+            mode=mode_filter,
+            limit=100,  # Get top 100 to ensure we find all potential matches
+            min_similarity=0.0  # We'll apply thresholds ourselves
+        )
+
+        if not similar_docs:
+            if mode_filter:
+                print(f"  ℹ️  No existing documents with mode '{mode_filter}' - will CREATE")
+            return [(None, 0.0, "create")]
+
+        # Convert to results format and determine actions
+        results = []
+        for doc in similar_docs:
+            similarity = doc['similarity']
+
+            # Determine action based on similarity
+            if similarity > self.MERGE_THRESHOLD:
+                action = "merge"
+                emoji = "🔗"
+            elif similarity < self.CREATE_THRESHOLD:
+                action = "create"
+                emoji = "✨"
+            else:
+                action = "verify"
+                emoji = "🤔"
+
+            results.append((doc, similarity, action))
+            print(f"    {emoji} {doc['title'][:50]}: {similarity:.3f} → {action.upper()}")
+
+        # Already sorted by similarity (PostgreSQL does this)
+        return results
+
+    def _find_similar_documents_python(
+        self,
+        new_topic: Dict,
+        new_embedding: List[float],
+        existing_documents: List[Dict],
+        mode_filter: str = None
+    ) -> List[Tuple[Dict, float, str]]:
+        """
+        Find similar documents using Python cosine similarity (legacy fallback)
+
+        Args:
+            new_topic: New topic to process
+            new_embedding: Embedding vector for the new topic
+            existing_documents: List of existing documents
+            mode_filter: Optional mode to filter documents by
+
+        Returns:
+            List of (document, similarity, action) tuples
+        """
         # Filter documents by mode if specified
         if mode_filter:
             filtered_docs = [doc for doc in existing_documents if doc.get('mode') == mode_filter]
@@ -140,11 +238,6 @@ class EmbeddingSearcher:
             print(f"\n  🔍 Searching for similar documents to: {new_topic['title']} (mode: {mode_filter})")
         else:
             print(f"\n  🔍 Searching for similar documents to: {new_topic['title']}")
-
-        # Create embedding for new topic (use summary for embedding)
-        new_embedding = self.create_embedding(new_topic['summary'])
-        if not new_embedding:
-            return [(None, 0.0, "create")]
 
         # Calculate similarity with each existing document
         results = []

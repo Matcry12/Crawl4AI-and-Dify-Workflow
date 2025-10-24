@@ -33,9 +33,9 @@ class WorkflowConfig:
     custom_llm_api_key: Optional[str] = None
 
     # Model Configuration
-    naming_model: str = "gemini/gemini-1.5-flash"
-    extraction_model: str = "gemini/gemini-2.0-flash-exp"
-    intelligent_analysis_model: str = "gemini/gemini-1.5-flash"
+    naming_model: str = "gemini/gemini-2.5-flash-lite"
+    extraction_model: str = "gemini/gemini-2.5-flash-lite"
+    intelligent_analysis_model: str = "gemini/gemini-2.5-flash-lite"
 
     # Knowledge Base Configuration
     knowledge_base_mode: str = 'automatic'  # 'automatic' or 'manual'

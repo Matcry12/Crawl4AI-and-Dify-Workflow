@@ -25,20 +25,22 @@ class DocumentMerger:
     Supports two modes: paragraph and full-doc
     """
 
-    def __init__(self, api_key: str = None):
+    def __init__(self, api_key: str = None, model_name: str = None):
         """
         Initialize document merger
 
         Args:
             api_key: Gemini API key (defaults to GEMINI_API_KEY env var)
+            model_name: Model to use (defaults to DOCUMENT_MERGER_MODEL env var)
         """
         self.api_key = api_key or os.getenv('GEMINI_API_KEY')
+        self.model_name = model_name or os.getenv('DOCUMENT_MERGER_MODEL', 'gemini-2.5-flash-lite')
 
         if not self.api_key:
             raise ValueError("GEMINI_API_KEY not found. Please set it in .env file")
 
         genai.configure(api_key=self.api_key)
-        self.model = genai.GenerativeModel('gemini-2.5-flash-lite')
+        self.model = genai.GenerativeModel(self.model_name)
 
         # Initialize rate limiters
         self.llm_limiter = get_llm_rate_limiter()
@@ -48,7 +50,7 @@ class DocumentMerger:
         self.chunker = HybridChunker(api_key=self.api_key)
 
         print("✅ Document merger initialized")
-        print(f"   Model: gemini-2.5-flash-lite")
+        print(f"   Model: {self.model_name}")
         print(f"   Hybrid chunker: enabled")
 
     def merge_paragraph_document(

@@ -31,7 +31,7 @@ def search_simple(query, top_k=5):
     """
 
     result = subprocess.run(
-        ['docker', 'exec', 'docker-db-1', 'psql', '-U', 'postgres', '-d', 'crawl4ai', '-c', sql],
+        ['docker', 'exec', os.getenv('POSTGRES_CONTAINER', 'postgres-crawl4ai'), 'psql', '-U', 'postgres', '-d', 'crawl4ai', '-c', sql],
         capture_output=True,
         text=True
     )
@@ -88,7 +88,7 @@ def list_all_documents():
     """
 
     result = subprocess.run(
-        ['docker', 'exec', 'docker-db-1', 'psql', '-U', 'postgres', '-d', 'crawl4ai', '-c', sql],
+        ['docker', 'exec', os.getenv('POSTGRES_CONTAINER', 'postgres-crawl4ai'), 'psql', '-U', 'postgres', '-d', 'crawl4ai', '-c', sql],
         capture_output=True,
         text=True
     )
@@ -105,7 +105,7 @@ def list_all_documents():
             ORDER BY count DESC;
         """
         result = subprocess.run(
-            ['docker', 'exec', 'docker-db-1', 'psql', '-U', 'postgres', '-d', 'crawl4ai', '-c', sql],
+            ['docker', 'exec', os.getenv('POSTGRES_CONTAINER', 'postgres-crawl4ai'), 'psql', '-U', 'postgres', '-d', 'crawl4ai', '-c', sql],
             capture_output=True,
             text=True
         )
@@ -126,7 +126,7 @@ def show_document(title):
     """
 
     result = subprocess.run(
-        ['docker', 'exec', 'docker-db-1', 'psql', '-U', 'postgres', '-d', 'crawl4ai', '-c', sql],
+        ['docker', 'exec', os.getenv('POSTGRES_CONTAINER', 'postgres-crawl4ai'), 'psql', '-U', 'postgres', '-d', 'crawl4ai', '-c', sql],
         capture_output=True,
         text=True
     )
@@ -175,7 +175,7 @@ def main():
     print("\n" + "=" * 80)
     print("💡 Tips:")
     print("  - Add more docs: python build_kb.py")
-    print("  - Direct DB access: docker exec -it docker-db-1 psql -U postgres -d crawl4ai")
+    print(f"  - Direct DB access: docker exec -it {os.getenv('POSTGRES_CONTAINER', 'postgres-crawl4ai')} psql -U postgres -d crawl4ai")
     print("=" * 80)
 
 if __name__ == "__main__":

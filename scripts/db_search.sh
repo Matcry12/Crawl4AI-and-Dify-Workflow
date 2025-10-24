@@ -12,7 +12,7 @@ SEARCH_TERM="$1"
 echo "🔍 Searching for: $SEARCH_TERM"
 echo "════════════════════════════════════════════════════════════════"
 
-docker exec docker-db-1 psql -U postgres -d crawl4ai -c "
+docker exec postgres-crawl4ai psql -U postgres -d crawl4ai -c "
 SELECT
     d.title,
     d.mode,

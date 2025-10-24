@@ -14,7 +14,7 @@ from enum import Enum
 
 # Database configuration
 USE_POSTGRESQL = os.getenv('USE_POSTGRESQL', 'true').lower() == 'true'
-POSTGRES_CONTAINER = os.getenv('POSTGRES_CONTAINER', 'docker-db-1')
+POSTGRES_CONTAINER = os.getenv('POSTGRES_CONTAINER', 'postgres-crawl4ai')
 POSTGRES_DATABASE = os.getenv('POSTGRES_DATABASE', 'crawl4ai')
 
 if USE_POSTGRESQL:
@@ -111,11 +111,30 @@ class CrawlNode(WorkflowNode):
             # Save report
             crawler.save_report()
 
+            # Validate that at least one page was successfully crawled
+            pages_crawled = len(crawler.successful)
+            pages_failed = len(crawler.failed)
+
+            if pages_crawled == 0:
+                # No pages successfully crawled
+                error_msg = f"Crawl failed: No pages successfully crawled (0/{pages_crawled + pages_failed} succeeded)"
+                if pages_failed > 0:
+                    error_msg += f". All {pages_failed} pages failed."
+                else:
+                    error_msg += ". No pages were found or accessible."
+
+                print(f"\n❌ {error_msg}")
+                print(f"   Start URL: {start_url}")
+                print(f"   Check if URL is accessible and returns valid HTML")
+
+                self.fail(error_msg)
+                raise ValueError(error_msg)
+
             # Prepare result
             result = {
                 'crawler': crawler,
-                'pages_crawled': len(crawler.successful),
-                'pages_failed': len(crawler.failed),
+                'pages_crawled': pages_crawled,
+                'pages_failed': pages_failed,
                 'links_discovered': len(crawler.to_visit),
                 'output_dir': crawler.output_dir
             }
@@ -144,6 +163,21 @@ class ExtractTopicsNode(WorkflowNode):
         self.start()
 
         try:
+            # Validate crawl_result parameter
+            if not crawl_result:
+                self.skip("No crawl result provided")
+                return None
+
+            if not crawl_result.get('output_dir'):
+                self.skip("Crawl result missing output_dir")
+                return None
+
+            # Check if any pages were crawled
+            pages_crawled = crawl_result.get('pages_crawled', 0)
+            if pages_crawled == 0:
+                self.skip(f"No pages were successfully crawled (cannot extract topics from empty data)")
+                return None
+
             # Check GEMINI_API_KEY
             if not os.getenv('GEMINI_API_KEY'):
                 self.skip("GEMINI_API_KEY not set")
@@ -213,14 +247,27 @@ class EmbeddingSearchNode(WorkflowNode):
                 self.skip("No topics to process from extraction")
                 return None
 
-            # Initialize searcher
-            print("✅ Embedding searcher initialized")
-            searcher = EmbeddingSearcher()
+            # Initialize database for PostgreSQL vector search (if enabled)
+            db = None
+            if USE_POSTGRESQL:
+                from chunked_document_database import ChunkedDocumentDatabase
+                db = ChunkedDocumentDatabase(
+                    container_name=POSTGRES_CONTAINER,
+                    database=POSTGRES_DATABASE
+                )
+
+            # Initialize searcher with database for PostgreSQL vector search
+            searcher = EmbeddingSearcher(use_postgres_search=USE_POSTGRESQL, db=db)
 
             # Get all topics from extraction result
             all_topics = []
             for topics in extract_result['all_topics'].values():
                 all_topics.extend(topics)
+
+            # Validate that we have topics to process
+            if len(all_topics) == 0:
+                self.skip("No topics to process (empty list after flattening)")
+                return None
 
             print(f"📋 Processing {len(all_topics)} topics")
             if mode_filter:
@@ -251,6 +298,102 @@ class EmbeddingSearchNode(WorkflowNode):
         except Exception as e:
             self.fail(str(e))
             raise
+
+
+class LLMVerificationNode(WorkflowNode):
+    """Node for LLM verification of uncertain topics"""
+
+    def __init__(self):
+        super().__init__(
+            name="LLM Verification",
+            description="Verify uncertain topics using LLM to decide merge or create"
+        )
+
+    async def execute(self, embedding_result: Dict) -> Dict:
+        """
+        Execute LLM verification for topics with uncertain similarity
+
+        Args:
+            embedding_result: Result from embedding search node containing
+                            topics in results['verify'] that need LLM judgment
+
+        Returns:
+            Updated embedding result with verified topics moved to merge/create
+        """
+        from llm_verifier import LLMVerifier
+
+        self.start()
+
+        try:
+            # Check GEMINI_API_KEY
+            if not os.getenv('GEMINI_API_KEY'):
+                self.skip("GEMINI_API_KEY not set")
+                return embedding_result  # Return unchanged
+
+            # Check if there are topics to verify
+            results = embedding_result.get('results', {})
+            verify_items = results.get('verify', [])
+
+            if not verify_items:
+                self.skip("No topics require LLM verification")
+                return embedding_result  # Return unchanged
+
+            # Deduplicate verify items by topic ID (handles dual-mode duplicates)
+            seen_ids = set()
+            unique_verify_items = []
+            for item in verify_items:
+                topic = item.get('topic', {})
+                # Use topic ID or title as unique identifier
+                topic_id = topic.get('id') or topic.get('title', '')
+                if topic_id and topic_id not in seen_ids:
+                    seen_ids.add(topic_id)
+                    unique_verify_items.append(item)
+
+            duplicates_removed = len(verify_items) - len(unique_verify_items)
+            if duplicates_removed > 0:
+                print(f"   ℹ️  Removed {duplicates_removed} duplicate topics from verification queue")
+                print(f"   Unique topics to verify: {len(unique_verify_items)}")
+
+            if not unique_verify_items:
+                self.skip("All verify topics were duplicates (already handled)")
+                return embedding_result
+
+            # Initialize verifier
+            print(f"✅ LLM verifier initialized")
+            verifier = LLMVerifier()
+
+            # Get rate limit delay from environment
+            rate_limit = float(os.getenv('RATE_LIMIT_DELAY', '1.0'))
+
+            # Verify all uncertain topics (deduplicated)
+            verified_results = verifier.batch_verify_topics(unique_verify_items, rate_limit_delay=rate_limit)
+
+            # Update embedding result - move verified topics to merge/create
+            embedding_result['results']['merge'].extend(verified_results['merge'])
+            embedding_result['results']['create'].extend(verified_results['create'])
+            embedding_result['results']['verify'] = []  # Clear verify list
+
+            # Update counts
+            embedding_result['merge_count'] += verified_results['merge_count']
+            embedding_result['create_count'] += verified_results['create_count']
+            embedding_result['verify_count'] = 0
+            embedding_result['llm_verifications'] = verified_results['total_verified']
+
+            # Prepare result summary
+            result = {
+                'total_verified': verified_results['total_verified'],
+                'merged_after_llm': verified_results['merge_count'],
+                'created_after_llm': verified_results['create_count'],
+                'updated_embedding_result': embedding_result
+            }
+
+            self.complete(result)
+            return embedding_result  # Return updated result
+
+        except Exception as e:
+            self.fail(str(e))
+            # On failure, return unchanged result (topics stay in verify)
+            return embedding_result
 
 
 class DocumentCreatorNode(WorkflowNode):
@@ -304,9 +447,15 @@ class DocumentCreatorNode(WorkflowNode):
             for item in results['create']:
                 create_topics.append(item['topic'])
 
-            # Also collect topics that need verification (we'll create docs for them too)
-            for item in results['verify']:
-                create_topics.append(item['topic'])
+            # NOTE: Verify topics should be handled by LLMVerificationNode first
+            # If verification is skipped/disabled, we still create them as fallback
+            verify_topics = results.get('verify', [])
+            if verify_topics:
+                print(f"   ⚠️  Warning: {len(verify_topics)} topics still in 'verify' state")
+                print(f"   These should have been verified by LLM Verification node")
+                print(f"   Creating them as new documents (fallback behavior)")
+                for item in verify_topics:
+                    create_topics.append(item['topic'])
 
             if not create_topics:
                 self.skip("No topics require document creation")
@@ -329,6 +478,9 @@ class DocumentCreatorNode(WorkflowNode):
                 raise ValueError(f"Invalid mode: {mode}")
 
             # Save to CHUNKED database (PostgreSQL with 3-level hierarchy)
+            db_save_success = False
+            db_result = None
+
             if USE_POSTGRESQL:
                 from chunked_document_database import ChunkedDocumentDatabase
 
@@ -337,20 +489,63 @@ class DocumentCreatorNode(WorkflowNode):
                     chunked_db = ChunkedDocumentDatabase()
                     db_result = chunked_db.insert_documents_batch(all_documents)
 
-                    print(f"   ✅ Saved: {db_result['success_count']}/{db_result['total']} documents to chunked database")
-                    if db_result['failed_docs']:
-                        print(f"   ⚠️  Failed: {', '.join(db_result['failed_docs'])}")
+                    saved_count = db_result.get('success_count', 0)
+                    total_count = db_result.get('total', 0)
+
+                    print(f"   ✅ Saved: {saved_count}/{total_count} documents to chunked database")
+
+                    if db_result.get('failed_docs'):
+                        failed_docs = db_result['failed_docs']
+                        print(f"   ⚠️  Failed: {', '.join(failed_docs[:5])}")
+                        if len(failed_docs) > 5:
+                            print(f"   ... and {len(failed_docs) - 5} more")
+
+                    # Check if save was successful
+                    if saved_count == 0:
+                        # Total failure - no documents saved
+                        error_msg = f"Database save failed: 0/{total_count} documents saved"
+                        print(f"   ❌ {error_msg}")
+                        self.fail(error_msg)
+                        raise RuntimeError(error_msg)
+                    elif saved_count < total_count:
+                        # Partial success - some documents saved
+                        print(f"   ⚠️  Partial save: {saved_count}/{total_count} documents saved")
+                        print(f"   ℹ️  Continuing with warning (partial data loss)")
+                        db_save_success = True  # Partial success
+                    else:
+                        # Complete success
+                        db_save_success = True
+
                 except Exception as e:
+                    # Database save completely failed
                     print(f"   ❌ Chunked database save failed: {e}")
-                    print(f"   ℹ️  Documents created but not saved to database")
+                    print(f"   ℹ️  Documents created in memory but NOT saved to database")
                     import traceback
                     traceback.print_exc()
+
+                    # Check if this is a connection error or data error
+                    error_str = str(e).lower()
+                    if any(keyword in error_str for keyword in ['connection', 'could not connect', 'timeout', 'refused']):
+                        error_msg = f"Database connection failed: {e}"
+                    else:
+                        error_msg = f"Database save failed: {e}"
+
+                    # CRITICAL: Fail the node to prevent silent data loss
+                    self.fail(error_msg)
+                    raise RuntimeError(f"{error_msg} - No documents saved to database") from e
             else:
                 # SQLite mode: Save to file only (old database schema incompatible with chunks)
                 print("\n💾 Saving documents to files (SQLite not supported for chunked documents)...")
                 print(f"   ℹ️  To enable chunked database storage, set USE_POSTGRESQL=true in .env")
-                # Save to files only
-                creator.save_documents(doc_results, output_dir="documents", save_to_db=False)
+
+                try:
+                    # Save to files only
+                    creator.save_documents(doc_results, output_dir="documents", save_to_db=False)
+                    db_save_success = True  # File save is our "database" in SQLite mode
+                except Exception as e:
+                    print(f"   ❌ File save failed: {e}")
+                    self.fail(f"File save failed: {e}")
+                    raise
 
             # Prepare result
             result = {
@@ -358,7 +553,10 @@ class DocumentCreatorNode(WorkflowNode):
                 'doc_results': doc_results,
                 'total_topics': len(create_topics),
                 'documents_created': doc_results.get('total_documents', doc_results.get('success_count', 0)),
-                'failed_count': doc_results.get('fail_count', 0)
+                'failed_count': doc_results.get('fail_count', 0),
+                'db_save_success': db_save_success,
+                'db_saved_count': db_result.get('success_count', 0) if db_result else 0,
+                'db_failed_count': len(db_result.get('failed_docs', [])) if db_result else 0
             }
 
             self.complete(result)
@@ -437,14 +635,27 @@ class DocumentMergerNode(WorkflowNode):
             # Prepare merge pairs based on mode
             if mode == "both":
                 # Need both paragraph and full-doc versions of existing documents
-                merge_pairs = []
+                # Group merge topics by base document ID to avoid duplicates
+                base_doc_map = {}
                 for mt in merge_topics:
-                    # Find corresponding documents
-                    para_doc = self._find_document(mt['target_document']['id'], existing_documents_para)
-                    full_doc = self._find_document(mt['target_document']['id'], existing_documents_full)
+                    target_id = mt['target_document']['id']
+                    base_id = self._get_base_document_id(target_id)
+
+                    if base_id not in base_doc_map:
+                        base_doc_map[base_id] = {
+                            'topic': mt['topic'],
+                            'base_id': base_id
+                        }
+
+                # Create merge pairs using base ID to find both versions
+                merge_pairs = []
+                for base_id, data in base_doc_map.items():
+                    # Find both paragraph and full-doc versions using base ID
+                    para_doc = self._find_document_by_base_id(base_id, existing_documents_para)
+                    full_doc = self._find_document_by_base_id(base_id, existing_documents_full)
 
                     merge_pairs.append({
-                        'topic': mt['topic'],
+                        'topic': data['topic'],
                         'para_document': para_doc,
                         'fulldoc_document': full_doc
                     })
@@ -507,6 +718,31 @@ class DocumentMergerNode(WorkflowNode):
 
         return None
 
+    def _get_base_document_id(self, doc_id: str) -> str:
+        """
+        Extract base document ID without mode suffix
+
+        E.g., 'eos_network_smart_contract_paragraph' -> 'eos_network_smart_contract'
+              'eos_network_smart_contract_full-doc' -> 'eos_network_smart_contract'
+        """
+        if doc_id.endswith('_paragraph'):
+            return doc_id[:-len('_paragraph')]
+        elif doc_id.endswith('_full-doc'):
+            return doc_id[:-len('_full-doc')]
+        return doc_id
+
+    def _find_document_by_base_id(self, base_id: str, documents: List[Dict]) -> Optional[Dict]:
+        """Find document by base ID (matching without mode suffix)"""
+        if not documents:
+            return None
+
+        for doc in documents:
+            doc_base_id = self._get_base_document_id(doc.get('id', ''))
+            if doc_base_id == base_id:
+                return doc
+
+        return None
+
 
 class WorkflowManager:
     """
@@ -547,10 +783,21 @@ class WorkflowManager:
                 elif node.name == "Embedding Search":
                     print(f"   Merge: {node.result['merge_count']}, Create: {node.result['create_count']}, Verify: {node.result['verify_count']}")
                     print(f"   LLM calls saved: {node.result['llm_calls_saved']}")
+                elif node.name == "LLM Verification":
+                    print(f"   Verified: {node.result['total_verified']}, Merge: {node.result['merged_after_llm']}, Create: {node.result['created_after_llm']}")
                 elif node.name == "Document Creator":
                     print(f"   Mode: {node.result['mode']}, Documents: {node.result['documents_created']}")
+                    if node.result.get('db_save_success'):
+                        saved = node.result.get('db_saved_count', 0)
+                        failed = node.result.get('db_failed_count', 0)
+                        if failed > 0:
+                            print(f"   Database: {saved} saved, {failed} failed (partial success)")
+                        else:
+                            print(f"   Database: {saved} saved successfully")
+                    else:
+                        print(f"   Database: Save failed (data loss)")
                     if node.result.get('failed_count', 0) > 0:
-                        print(f"   Failed: {node.result['failed_count']}")
+                        print(f"   Creation failed: {node.result['failed_count']}")
                 elif node.name == "Document Merger":
                     print(f"   Mode: {node.result['mode']}, Documents: {node.result['documents_merged']}")
                     if node.result.get('failed_count', 0) > 0:
@@ -606,8 +853,20 @@ class WorkflowManager:
                 print(f"   Mode: {document_node.result['mode'].upper()}")
                 print(f"   Topics processed: {document_node.result['total_topics']}")
                 print(f"   Documents created: {document_node.result['documents_created']}")
+
+                # Database save status
+                if document_node.result.get('db_save_success'):
+                    saved = document_node.result.get('db_saved_count', 0)
+                    failed = document_node.result.get('db_failed_count', 0)
+                    if failed > 0:
+                        print(f"   ⚠️  Database: {saved}/{saved+failed} saved (partial success)")
+                    else:
+                        print(f"   ✅ Database: All {saved} documents saved successfully")
+                else:
+                    print(f"   ❌ Database: Save FAILED - documents NOT persisted")
+
                 if document_node.result.get('failed_count', 0) > 0:
-                    print(f"   Failed: {document_node.result['failed_count']}")
+                    print(f"   Creation failed: {document_node.result['failed_count']}")
                 print(f"   Output directory: documents/")
 
             if merger_node and merger_node.result:
@@ -675,6 +934,13 @@ class WorkflowManager:
             output_dir=output_dir
         )
 
+        # Validate crawl succeeded before continuing
+        if not crawl_result or crawl_node.status == NodeStatus.FAILED:
+            print("\n❌ Crawl failed - cannot continue workflow")
+            self.end_time = datetime.now()
+            self.print_summary()
+            return
+
         # Print status after crawl
         self.print_status()
 
@@ -693,44 +959,47 @@ class WorkflowManager:
         embedding_result = None
         if embedding_search and extract_result:
             # Load existing documents from database if not provided
+            # NOTE: Only needed for Python fallback mode
+            # PostgreSQL mode queries embeddings directly from database
             if existing_documents is None:
-                print(f"\n{'='*80}")
-                print("📚 Loading existing documents from database")
-                print(f"{'='*80}")
+                if USE_POSTGRESQL:
+                    # PostgreSQL mode: Skip loading embeddings (queried directly in database)
+                    print(f"\n{'='*80}")
+                    print("📚 PostgreSQL mode: Embeddings will be queried directly from database")
+                    print("   ⚡ Skipping upfront loading (optimization)")
+                    print(f"{'='*80}")
+                    existing_documents = []  # Empty list, not used by PostgreSQL search
+                else:
+                    # Python fallback mode: Load embeddings for in-memory comparison
+                    print(f"\n{'='*80}")
+                    print("📚 Loading existing documents from database")
+                    print(f"{'='*80}")
 
-                try:
-                    if USE_POSTGRESQL:
-                        from document_database_docker import DocumentDatabaseDocker
-                        db = DocumentDatabaseDocker(
-                            container_name=POSTGRES_CONTAINER,
-                            database=POSTGRES_DATABASE
-                        )
-                        existing_documents = db.list_documents()
-                    else:
+                    try:
                         from document_database import DocumentDatabase
                         db = DocumentDatabase(db_path="documents.db")
                         existing_documents = db.get_all_documents()
 
-                    if existing_documents:
-                        print(f"✅ Loaded {len(existing_documents)} existing documents")
+                        if existing_documents:
+                            print(f"✅ Loaded {len(existing_documents)} existing documents")
 
-                        # Show breakdown by mode
-                        para_count = sum(1 for doc in existing_documents if doc.get('mode') == 'paragraph')
-                        full_count = sum(1 for doc in existing_documents if doc.get('mode') == 'full-doc')
-                        print(f"   Paragraph mode: {para_count}")
-                        print(f"   Full-doc mode: {full_count}")
-                    else:
-                        print("ℹ️  No existing documents found in database")
+                            # Show breakdown by mode
+                            para_count = sum(1 for doc in existing_documents if doc.get('mode') == 'paragraph')
+                            full_count = sum(1 for doc in existing_documents if doc.get('mode') == 'full-doc')
+                            print(f"   Paragraph mode: {para_count}")
+                            print(f"   Full-doc mode: {full_count}")
+                        else:
+                            print("ℹ️  No existing documents found in database")
+                            existing_documents = []
+
+                    except FileNotFoundError:
+                        print("ℹ️  Database file not found - treating as first run")
+                        existing_documents = []
+                    except Exception as e:
+                        print(f"⚠️  Could not load existing documents: {e}")
                         existing_documents = []
 
-                except FileNotFoundError:
-                    print("ℹ️  Database file not found - treating as first run")
-                    existing_documents = []
-                except Exception as e:
-                    print(f"⚠️  Could not load existing documents: {e}")
-                    existing_documents = []
-
-                print(f"{'='*80}")
+                    print(f"{'='*80}")
 
             embedding_node = EmbeddingSearchNode()
             self.add_node(embedding_node)
@@ -782,6 +1051,17 @@ class WorkflowManager:
             # Print status after embedding search
             self.print_status()
 
+        # Node 3.5: LLM Verification (if there are uncertain topics)
+        if embedding_result and embedding_result.get('verify_count', 0) > 0:
+            verification_node = LLMVerificationNode()
+            self.add_node(verification_node)
+
+            # Verify uncertain topics and update embedding_result
+            embedding_result = await verification_node.execute(embedding_result)
+
+            # Print status after LLM verification
+            self.print_status()
+
         # Node 4: Document Creator (if enabled and embedding search succeeded)
         if create_documents and embedding_result:
             document_node = DocumentCreatorNode()
@@ -804,20 +1084,20 @@ class WorkflowManager:
 
                     try:
                         if USE_POSTGRESQL:
-                            from document_database_docker import DocumentDatabaseDocker
-                            db = DocumentDatabaseDocker(
+                            from chunked_document_database import ChunkedDocumentDatabase
+                            db = ChunkedDocumentDatabase(
                                 container_name=POSTGRES_CONTAINER,
                                 database=POSTGRES_DATABASE
                             )
 
                             # Load paragraph mode documents
                             if existing_documents_para is None:
-                                existing_documents_para = db.list_documents(mode="paragraph")
+                                existing_documents_para = db.get_all_documents_with_embeddings(mode="paragraph")
                                 print(f"✅ Loaded {len(existing_documents_para)} paragraph mode documents")
 
                             # Load full-doc mode documents
                             if existing_documents_full is None:
-                                existing_documents_full = db.list_documents(mode="full-doc")
+                                existing_documents_full = db.get_all_documents_with_embeddings(mode="full-doc")
                                 print(f"✅ Loaded {len(existing_documents_full)} full-doc mode documents")
                         else:
                             from document_database import DocumentDatabase

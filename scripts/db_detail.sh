@@ -5,7 +5,7 @@ if [ $# -eq 0 ]; then
     echo "Usage: $0 <document_id>"
     echo ""
     echo "Available documents:"
-    docker exec docker-db-1 psql -U postgres -d crawl4ai -t -c "SELECT id FROM documents ORDER BY created_at DESC LIMIT 10;"
+    docker exec postgres-crawl4ai psql -U postgres -d crawl4ai -t -c "SELECT id FROM documents ORDER BY created_at DESC LIMIT 10;"
     exit 1
 fi
 
@@ -18,7 +18,7 @@ echo "════════════════════════�
 echo ""
 echo "📋 Basic Info"
 echo "────────────────────────────────────────────────────────────────"
-docker exec docker-db-1 psql -U postgres -d crawl4ai -c "
+docker exec postgres-crawl4ai psql -U postgres -d crawl4ai -c "
 SELECT
     id,
     title,
@@ -35,7 +35,7 @@ WHERE id = '$DOC_ID';
 echo ""
 echo "📑 Sections"
 echo "────────────────────────────────────────────────────────────────"
-docker exec docker-db-1 psql -U postgres -d crawl4ai -c "
+docker exec postgres-crawl4ai psql -U postgres -d crawl4ai -c "
 SELECT
     s.section_index,
     COALESCE(s.header, '(no header)') as header,
@@ -52,7 +52,7 @@ ORDER BY s.section_index;
 echo ""
 echo "💬 Propositions"
 echo "────────────────────────────────────────────────────────────────"
-docker exec docker-db-1 psql -U postgres -d crawl4ai -c "
+docker exec postgres-crawl4ai psql -U postgres -d crawl4ai -c "
 SELECT
     s.section_index,
     p.proposition_index,
@@ -69,7 +69,7 @@ LIMIT 20;
 echo ""
 echo "🔢 Embeddings"
 echo "────────────────────────────────────────────────────────────────"
-docker exec docker-db-1 psql -U postgres -d crawl4ai -c "
+docker exec postgres-crawl4ai psql -U postgres -d crawl4ai -c "
 SELECT
     entity_type,
     COUNT(*) as count,

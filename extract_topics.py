@@ -28,26 +28,28 @@ class TopicExtractor:
     Simple topic extractor using Gemini LLM
     """
 
-    def __init__(self, api_key: str = None):
+    def __init__(self, api_key: str = None, model_name: str = None):
         """
         Initialize topic extractor
 
         Args:
             api_key: Gemini API key (defaults to GEMINI_API_KEY env var)
+            model_name: Model to use (defaults to TOPIC_EXTRACTION_MODEL env var)
         """
         self.api_key = api_key or os.getenv('GEMINI_API_KEY')
+        self.model_name = model_name or os.getenv('TOPIC_EXTRACTION_MODEL', 'gemini-2.5-flash-lite')
 
         if not self.api_key:
             raise ValueError("GEMINI_API_KEY not found. Please set it in .env file")
 
         genai.configure(api_key=self.api_key)
-        # Using gemini-2.5-flash-lite - cheapest option
-        self.model = genai.GenerativeModel('gemini-2.5-flash-lite')
+        self.model = genai.GenerativeModel(self.model_name)
 
         # Rate limiter
         self.llm_limiter = get_llm_rate_limiter()
 
         print("✅ Topic extractor initialized")
+        print(f"   Model: {self.model_name}")
 
     def create_extraction_prompt(self, markdown_content: str, url: str) -> str:
         """

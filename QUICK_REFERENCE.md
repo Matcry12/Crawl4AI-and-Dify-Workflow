@@ -42,7 +42,7 @@ Shows complete details: sections, propositions, embeddings
 
 ### Quick Status
 ```bash
-docker exec docker-db-1 psql -U postgres -d crawl4ai -c "
+docker exec postgres-crawl4ai psql -U postgres -d crawl4ai -c "
 SELECT COUNT(*) as docs FROM documents;
 SELECT COUNT(*) as sections FROM semantic_sections;
 SELECT COUNT(*) as props FROM semantic_propositions;
@@ -52,21 +52,21 @@ SELECT COUNT(*) as embeddings FROM embeddings;
 
 ### List Documents
 ```bash
-docker exec docker-db-1 psql -U postgres -d crawl4ai -c "
+docker exec postgres-crawl4ai psql -U postgres -d crawl4ai -c "
 SELECT id, title, mode FROM documents ORDER BY created_at DESC;
 "
 ```
 
 ### Database Size
 ```bash
-docker exec docker-db-1 psql -U postgres -d crawl4ai -c "
+docker exec postgres-crawl4ai psql -U postgres -d crawl4ai -c "
 SELECT pg_size_pretty(pg_database_size('crawl4ai'));
 "
 ```
 
 ### Clear Database
 ```bash
-docker exec docker-db-1 psql -U postgres -d crawl4ai -c "
+docker exec postgres-crawl4ai psql -U postgres -d crawl4ai -c "
 TRUNCATE TABLE documents CASCADE;
 TRUNCATE TABLE embeddings;
 "
@@ -102,18 +102,18 @@ docker ps | grep db-1
 
 ### Container Logs
 ```bash
-docker logs docker-db-1 --tail 50
-docker logs docker-db-1 --follow  # Follow in real-time
+docker logs postgres-crawl4ai --tail 50
+docker logs postgres-crawl4ai --follow  # Follow in real-time
 ```
 
 ### Container Resources
 ```bash
-docker stats docker-db-1 --no-stream
+docker stats postgres-crawl4ai --no-stream
 ```
 
 ### Restart Container
 ```bash
-docker restart docker-db-1
+docker restart postgres-crawl4ai
 ```
 
 ### Enter Container
@@ -132,7 +132,7 @@ docker exec -it docker-db-1 psql -U postgres -d crawl4ai
 
 ### Documents with Most Chunks
 ```bash
-docker exec docker-db-1 psql -U postgres -d crawl4ai -c "
+docker exec postgres-crawl4ai psql -U postgres -d crawl4ai -c "
 SELECT
     d.title,
     d.mode,
@@ -149,7 +149,7 @@ LIMIT 10;
 
 ### Recent Activity (Last Hour)
 ```bash
-docker exec docker-db-1 psql -U postgres -d crawl4ai -c "
+docker exec postgres-crawl4ai psql -U postgres -d crawl4ai -c "
 SELECT
     title,
     mode,
@@ -162,7 +162,7 @@ ORDER BY created_at DESC;
 
 ### Embedding Coverage
 ```bash
-docker exec docker-db-1 psql -U postgres -d crawl4ai -c "
+docker exec postgres-crawl4ai psql -U postgres -d crawl4ai -c "
 SELECT
     entity_type,
     COUNT(*) as count
@@ -173,7 +173,7 @@ GROUP BY entity_type;
 
 ### Documents Without Chunks (Should be 0)
 ```bash
-docker exec docker-db-1 psql -U postgres -d crawl4ai -c "
+docker exec postgres-crawl4ai psql -U postgres -d crawl4ai -c "
 SELECT
     d.id,
     d.title,
@@ -247,30 +247,30 @@ Embedding: text-embedding-004 (768 dimensions)
 
 ### Database not responding?
 ```bash
-docker restart docker-db-1
+docker restart postgres-crawl4ai
 ```
 
 ### Check container logs
 ```bash
-docker logs docker-db-1 --tail 100
+docker logs postgres-crawl4ai --tail 100
 ```
 
 ### Check PostgreSQL processes
 ```bash
-docker exec docker-db-1 psql -U postgres -d crawl4ai -c "
+docker exec postgres-crawl4ai psql -U postgres -d crawl4ai -c "
 SELECT * FROM pg_stat_activity WHERE datname = 'crawl4ai';
 "
 ```
 
 ### Vacuum database
 ```bash
-docker exec docker-db-1 psql -U postgres -d crawl4ai -c "VACUUM ANALYZE;"
+docker exec postgres-crawl4ai psql -U postgres -d crawl4ai -c "VACUUM ANALYZE;"
 ```
 
 ### Reset everything
 ```bash
 # Clear database
-docker exec docker-db-1 psql -U postgres -d crawl4ai -c "
+docker exec postgres-crawl4ai psql -U postgres -d crawl4ai -c "
 TRUNCATE TABLE documents CASCADE;
 TRUNCATE TABLE embeddings;
 "

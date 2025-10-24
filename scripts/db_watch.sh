@@ -2,7 +2,7 @@
 # Watch database changes in real-time (updates every 2 seconds)
 # Press Ctrl+C to stop
 
-watch -n 2 'docker exec docker-db-1 psql -U postgres -d crawl4ai -t -c "
+watch -n 2 'docker exec postgres-crawl4ai psql -U postgres -d crawl4ai -t -c "
 SELECT
     '\''📊 Database Status'\'' as title,
     '\''────────────────────────'\'' as separator

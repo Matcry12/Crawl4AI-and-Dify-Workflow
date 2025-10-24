@@ -4,7 +4,7 @@
 echo "📊 Database Status"
 echo "════════════════════════════════════════════════"
 
-docker exec docker-db-1 psql -U postgres -d crawl4ai -t -A -F'|' -c "
+docker exec postgres-crawl4ai psql -U postgres -d crawl4ai -t -A -F'|' -c "
 SELECT
     (SELECT COUNT(*) FROM documents) as documents,
     (SELECT COUNT(*) FROM semantic_sections) as sections,
@@ -21,7 +21,7 @@ echo ""
 echo "📈 Coverage"
 echo "────────────────────────────────────────────────"
 
-docker exec docker-db-1 psql -U postgres -d crawl4ai -t -c "
+docker exec postgres-crawl4ai psql -U postgres -d crawl4ai -t -c "
 SELECT
     COUNT(DISTINCT d.id) as total_docs,
     COUNT(DISTINCT CASE WHEN s.id IS NOT NULL THEN d.id END) as docs_with_chunks,
@@ -36,7 +36,7 @@ echo ""
 echo "💾 Database Size"
 echo "────────────────────────────────────────────────"
 
-docker exec docker-db-1 psql -U postgres -d crawl4ai -t -c "
+docker exec postgres-crawl4ai psql -U postgres -d crawl4ai -t -c "
 SELECT pg_size_pretty(pg_database_size('crawl4ai')) as size;
 " | tail -1
 

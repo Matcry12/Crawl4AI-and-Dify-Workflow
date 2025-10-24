@@ -28,20 +28,22 @@ class HybridChunker:
     Semantic chunker that splits documents into hierarchical chunks
     """
 
-    def __init__(self, api_key: str = None):
+    def __init__(self, api_key: str = None, model_name: str = None):
         """
         Initialize chunker with Gemini API
 
         Args:
             api_key: Gemini API key (defaults to GEMINI_API_KEY env var)
+            model_name: Model to use (defaults to CHUNKING_MODEL env var)
         """
         self.api_key = api_key or os.getenv('GEMINI_API_KEY')
+        self.model_name = model_name or os.getenv('CHUNKING_MODEL', 'gemini-2.5-flash-lite')
 
         if not self.api_key:
             raise ValueError("GEMINI_API_KEY not found in environment")
 
         genai.configure(api_key=self.api_key)
-        self.model = genai.GenerativeModel('gemini-2.5-flash-lite')
+        self.model = genai.GenerativeModel(self.model_name)
 
         # Rate limiters
         self.llm_limiter = get_llm_rate_limiter()
@@ -58,7 +60,7 @@ class HybridChunker:
         self.proposition_target_tokens = 100
 
         print("✅ Hybrid chunker initialized")
-        print(f"   Model: gemini-2.5-flash-lite")
+        print(f"   Model: {self.model_name}")
         print(f"   Section size: {self.section_min_tokens}-{self.section_max_tokens} tokens")
         print(f"   Proposition size: {self.proposition_min_tokens}-{self.proposition_max_tokens} tokens")
 
