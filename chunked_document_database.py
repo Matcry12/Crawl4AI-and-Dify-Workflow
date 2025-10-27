@@ -1,832 +1,191 @@
 #!/usr/bin/env python3
 """
-Chunked Document Database Module (PostgreSQL via Docker)
+Simple Document Database - Simplified 3-Table Schema
 
-Stores documents with 3-level hierarchical chunking:
-- Level 1: Document (with summary embedding)
-- Level 2: Semantic sections (200-400 tokens)
-- Level 3: Semantic propositions (50-150 tokens)
+Works with the new simplified schema:
+- documents (with keywords[], source_urls[])
+- chunks (quality chunks for search)
+- merge_history (tracking merges)
 
-Uses docker exec for all database operations (no port exposure needed)
+Supports:
+- Parent Document Retrieval (search chunks, return documents)
+- Atomic document+chunks updates
+- Vector similarity search with pgvector
 """
 
 import os
-os.environ['GRPC_VERBOSITY'] = 'ERROR'
-os.environ['GLOG_minloglevel'] = '2'
-
-import subprocess
 import json
-import tempfile
 from typing import List, Dict, Optional
 from datetime import datetime
 
 
-class ChunkedDocumentDatabase:
+class SimpleDocumentDatabase:
     """
-    PostgreSQL database for storing hierarchically chunked documents
-    Uses docker exec to connect (no port exposure needed)
+    Database interface for simplified RAG architecture
+
+    Schema:
+    - documents: Full documents (what LLM receives)
+    - chunks: Quality chunks (for precise search)
+    - merge_history: Merge tracking
     """
 
     def __init__(
         self,
         container_name: str = None,
         database: str = None,
-        user: str = "postgres"
+        user: str = "postgres",
+        password: str = "postgres",
+        host: str = "localhost",
+        port: int = 5432
     ):
         """
-        Initialize chunked document database
+        Initialize database connection
 
         Args:
-            container_name: Docker container name (defaults to POSTGRES_CONTAINER env var)
-            database: Database name (defaults to POSTGRES_DATABASE env var)
+            container_name: Docker container name (will use docker exec)
+            database: Database name
             user: Database user
+            password: Database password
+            host: Database host
+            port: Database port
         """
         self.container_name = container_name or os.getenv('POSTGRES_CONTAINER', 'postgres-crawl4ai')
         self.database = database or os.getenv('POSTGRES_DATABASE', 'crawl4ai')
         self.user = user
+        self.password = password
+        self.host = host
+        self.port = port
 
-        # Verify container is running
-        self._verify_container()
+        # Use docker exec for local container
+        self.use_docker = True
 
-        print("✅ Chunked document database initialized")
+        print("✅ Simple document database initialized")
         print(f"   Container: {self.container_name}")
         print(f"   Database: {self.database}")
-        print(f"   Schema: 3-level hierarchy (doc → sections → propositions)")
+        print(f"   Schema: Simplified (documents + chunks + merge_history)")
 
-    def _verify_container(self):
-        """Verify Docker container is running"""
+    def _execute_query(self, query: str, params: tuple = None, fetch: bool = True):
+        """Execute SQL query via docker exec"""
+        import subprocess
+
+        # Escape single quotes in query
+        query_escaped = query.replace("'", "''")
+
+        if params:
+            # Simple parameter substitution for arrays and values
+            for param in params:
+                if isinstance(param, list):
+                    # Convert Python list to PostgreSQL array
+                    if not param:  # Empty array needs explicit type
+                        param_str = "ARRAY[]::TEXT[]"
+                    else:
+                        param_str = "ARRAY[" + ",".join(f"'{str(p)}'" for p in param) + "]"
+                    query_escaped = query_escaped.replace('%s', param_str, 1)
+                elif param is None:
+                    query_escaped = query_escaped.replace('%s', 'NULL', 1)
+                else:
+                    # Escape and quote string parameters
+                    param_str = str(param).replace("'", "''")
+                    query_escaped = query_escaped.replace('%s', f"'{param_str}'", 1)
+
+        # Build psql command (pass query via stdin to avoid command-line length limits)
+        cmd = [
+            'docker', 'exec', '-i', self.container_name,
+            'psql', '-U', self.user, '-d', self.database,
+            '-t',  # Tuples only
+            '-A',  # Unaligned output
+            '-F', '|'  # Field separator
+        ]
+
         try:
             result = subprocess.run(
-                ["docker", "inspect", "-f", "{{.State.Running}}", self.container_name],
+                cmd,
+                input=query_escaped,  # Pass query via stdin instead of -c
                 capture_output=True,
                 text=True,
                 check=True
             )
-            if result.stdout.strip() != "true":
-                raise RuntimeError(f"Container {self.container_name} is not running")
-        except subprocess.CalledProcessError:
-            raise RuntimeError(f"Container {self.container_name} not found")
 
-    def _execute_sql_file(self, sql_content: str) -> bool:
-        """
-        Execute SQL from a temporary file via docker exec
+            if fetch and result.stdout:
+                # Parse results
+                lines = [line.strip() for line in result.stdout.strip().split('\n') if line.strip()]
+                return lines
 
-        Args:
-            sql_content: SQL commands to execute
-
-        Returns:
-            True if successful, False otherwise
-        """
-        temp_file = None
-        try:
-            # Write SQL to temporary file
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.sql', delete=False) as f:
-                f.write(sql_content)
-                temp_file = f.name
-
-            # Copy file to container
-            subprocess.run(
-                ["docker", "cp", temp_file, f"{self.container_name}:/tmp/temp_query.sql"],
-                check=True,
-                capture_output=True
-            )
-
-            # Execute SQL file in container with ON_ERROR_STOP
-            # This makes psql exit with non-zero code on any error
-            result = subprocess.run(
-                ["docker", "exec", self.container_name,
-                 "psql", "-U", self.user, "-d", self.database,
-                 "-v", "ON_ERROR_STOP=1",
-                 "-f", "/tmp/temp_query.sql"],
-                capture_output=True,
-                text=True,
-                check=False  # Don't raise exception, we'll check manually
-            )
-
-            # Check for errors in output
-            has_error = False
-            if result.returncode != 0:
-                has_error = True
-                print(f"  ❌ psql exited with code {result.returncode}")
-
-            # Also check for ERROR in output (belt and suspenders)
-            if "ERROR:" in result.stderr or "ERROR:" in result.stdout:
-                has_error = True
-                print(f"  ❌ SQL execution errors detected:")
-                if result.stderr:
-                    print(f"     stderr: {result.stderr[:500]}")
-                if result.stdout:
-                    print(f"     stdout: {result.stdout[:500]}")
-
-            # Clean up
-            os.unlink(temp_file)
-            subprocess.run(
-                ["docker", "exec", self.container_name, "rm", "/tmp/temp_query.sql"],
-                capture_output=True
-            )
-
-            if has_error:
-                return False
-
-            return True
+            return []
 
         except subprocess.CalledProcessError as e:
-            print(f"  ❌ SQL Error: {e.stderr}")
-            if temp_file and os.path.exists(temp_file):
-                os.unlink(temp_file)
-            return False
-        except Exception as e:
-            print(f"  ❌ Error: {e}")
-            if temp_file and os.path.exists(temp_file):
-                os.unlink(temp_file)
-            return False
+            print(f"  ❌ Query failed: {e.stderr}")
+            raise
 
     def insert_document(self, document: Dict) -> bool:
         """
-        Insert document with full hierarchy
+        Insert document with chunks
 
         Args:
-            document: Document dict with 'chunks' key containing hierarchical chunks
+            document: Document dict with:
+                - id, title, content, summary, category
+                - keywords (list), source_urls (list)
+                - embedding (list/vector)
+                - chunks (list of chunk dicts with embeddings)
 
         Returns:
-            True if successful, False otherwise
+            Success boolean
         """
         try:
-            # Extract data
-            doc_id = document['id']
-            title = document['title']
-            category = document.get('category', 'general')
-            mode = document['mode']
-            content = document['content']
-            chunks = document.get('chunks')
+            # Insert document
+            doc_query = """
+                INSERT INTO documents (
+                    id, title, content, summary, category,
+                    keywords, source_urls, embedding,
+                    created_at, updated_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s::vector(768), NOW(), NOW())
+            """
 
-            if not chunks:
-                print(f"  ⚠️  Document {doc_id} has no chunks, storing document only")
-                # Just store basic document
-                sql = f"""
-INSERT INTO documents (id, title, category, mode, content, created_at)
-VALUES (
-    {self._quote(doc_id)},
-    {self._quote(title)},
-    {self._quote(category)},
-    {self._quote(mode)},
-    {self._quote(content)},
-    CURRENT_TIMESTAMP
-)
-ON CONFLICT (id) DO UPDATE SET
-    content = EXCLUDED.content,
-    updated_at = CURRENT_TIMESTAMP;
-"""
-                return self._execute_sql_file(sql)
+            self._execute_query(
+                doc_query,
+                (
+                    document['id'],
+                    document['title'],
+                    document['content'],
+                    document.get('summary', ''),
+                    document.get('category', 'general'),
+                    document.get('keywords', []),
+                    document.get('source_urls', []),
+                    json.dumps(document['embedding'])
+                ),
+                fetch=False
+            )
 
-            # Build complete SQL for document + chunks
-            sql_parts = []
+            # Insert chunks
+            chunks = document.get('chunks', [])
+            for chunk in chunks:
+                chunk_query = """
+                    INSERT INTO chunks (
+                        id, document_id, content, chunk_index,
+                        token_count, embedding
+                    ) VALUES (%s, %s, %s, %s, %s, %s::vector(768))
+                """
 
-            # 1. Insert document with summary
-            summary = chunks['summary']
-            sql_parts.append(f"""
-INSERT INTO documents (id, title, category, mode, content, summary, created_at)
-VALUES (
-    {self._quote(doc_id)},
-    {self._quote(title)},
-    {self._quote(category)},
-    {self._quote(mode)},
-    {self._quote(content)},
-    {self._quote(summary)},
-    CURRENT_TIMESTAMP
-)
-ON CONFLICT (id) DO UPDATE SET
-    content = EXCLUDED.content,
-    summary = EXCLUDED.summary,
-    updated_at = CURRENT_TIMESTAMP;
-""")
+                chunk_id = chunk.get('id', f"{document['id']}_chunk_{chunk['chunk_index']}")
 
-            # 2. Insert document summary embedding
-            summary_embedding_vec = self._quote_vector(chunks['summary_embedding'])
-            sql_parts.append(f"""
-INSERT INTO embeddings (entity_type, entity_id, embedding)
-VALUES ('document_summary', {self._quote(doc_id)}, {summary_embedding_vec})
-ON CONFLICT (entity_type, entity_id) DO UPDATE SET embedding = EXCLUDED.embedding;
-""")
+                self._execute_query(
+                    chunk_query,
+                    (
+                        chunk_id,
+                        document['id'],
+                        chunk['content'],
+                        chunk['chunk_index'],
+                        chunk['token_count'],
+                        json.dumps(chunk['embedding'])
+                    ),
+                    fetch=False
+                )
 
-            # 3. Insert sections and propositions
-            for section in chunks['sections']:
-                section_id = section['section_id']
-                section_index = section['section_index']
-                header = section.get('header', '')
-                section_content = section['content']
-                token_count = section['token_count']
-                keywords = section.get('keywords', [])
-                topics = section.get('topics', [])
-                section_type = section.get('section_type', '')
-
-                # Insert section
-                keywords_array = self._array(keywords)
-                topics_array = self._array(topics)
-                sql_parts.append(f"""
-INSERT INTO semantic_sections (
-    id, document_id, section_index, header, content,
-    token_count, keywords, topics, section_type
-)
-VALUES (
-    {self._quote(section_id)},
-    {self._quote(doc_id)},
-    {section_index},
-    {self._quote(header) if header else 'NULL'},
-    {self._quote(section_content)},
-    {token_count},
-    {keywords_array},
-    {topics_array},
-    {self._quote(section_type) if section_type else 'NULL'}
-)
-ON CONFLICT (document_id, section_index) DO UPDATE SET
-    content = EXCLUDED.content,
-    header = EXCLUDED.header,
-    token_count = EXCLUDED.token_count,
-    keywords = EXCLUDED.keywords,
-    topics = EXCLUDED.topics,
-    section_type = EXCLUDED.section_type;
-""")
-
-                # Insert section embedding
-                section_embedding_vec = self._quote_vector(section['embedding'])
-                sql_parts.append(f"""
-INSERT INTO embeddings (entity_type, entity_id, embedding)
-VALUES ('section', {self._quote(section_id)}, {section_embedding_vec})
-ON CONFLICT (entity_type, entity_id) DO UPDATE SET embedding = EXCLUDED.embedding;
-""")
-
-                # Insert propositions
-                for prop in section['propositions']:
-                    prop_id = prop['proposition_id']
-                    prop_index = prop['proposition_index']
-                    prop_content = prop['content']
-                    prop_token_count = prop['token_count']
-                    prop_type = prop.get('proposition_type', '')
-                    entities = prop.get('entities', [])
-                    prop_keywords = prop.get('keywords', [])
-
-                    entities_array = self._array(entities)
-                    prop_keywords_array = self._array(prop_keywords)
-
-                    sql_parts.append(f"""
-INSERT INTO semantic_propositions (
-    id, section_id, proposition_index, content,
-    token_count, proposition_type, entities, keywords
-)
-VALUES (
-    {self._quote(prop_id)},
-    {self._quote(section_id)},
-    {prop_index},
-    {self._quote(prop_content)},
-    {prop_token_count},
-    {self._quote(prop_type) if prop_type else 'NULL'},
-    {entities_array},
-    {prop_keywords_array}
-)
-ON CONFLICT (section_id, proposition_index) DO UPDATE SET
-    content = EXCLUDED.content,
-    token_count = EXCLUDED.token_count,
-    proposition_type = EXCLUDED.proposition_type,
-    entities = EXCLUDED.entities,
-    keywords = EXCLUDED.keywords;
-""")
-
-                    # Insert proposition embedding
-                    prop_embedding_vec = self._quote_vector(prop['embedding'])
-                    sql_parts.append(f"""
-INSERT INTO embeddings (entity_type, entity_id, embedding)
-VALUES ('proposition', {self._quote(prop_id)}, {prop_embedding_vec})
-ON CONFLICT (entity_type, entity_id) DO UPDATE SET embedding = EXCLUDED.embedding;
-""")
-
-            # Execute all SQL in one transaction
-            # Build transaction with explicit error handling
-            full_sql = "BEGIN;\n" + "\n".join(sql_parts) + "\nCOMMIT;"
-
-            # Execute SQL
-            success = self._execute_sql_file(full_sql)
-
-            if not success:
-                print(f"  ❌ Document insertion failed: {doc_id}")
-                print(f"     Sections: {len(chunks['sections'])}")
-                print(f"     Propositions: {chunks['stats']['total_propositions']}")
-
-                # Save failed SQL for debugging
-                debug_file = f"/tmp/failed_insert_{doc_id}.sql"
-                try:
-                    with open(debug_file, 'w') as f:
-                        f.write(full_sql)
-                    print(f"     Debug SQL saved to: {debug_file}")
-                except Exception as e:
-                    print(f"     Could not save debug SQL: {e}")
-
-                return False
-
-            print(f"  ✅ Document inserted: {doc_id}")
-            print(f"     Sections: {len(chunks['sections'])}")
-            print(f"     Propositions: {chunks['stats']['total_propositions']}")
             return True
 
         except Exception as e:
             print(f"  ❌ Error inserting document: {e}")
-            import traceback
-            traceback.print_exc()
             return False
-
-    def _quote(self, value: str) -> str:
-        """Quote and escape string for SQL"""
-        if value is None:
-            return "NULL"
-        # Escape single quotes by doubling them
-        escaped = str(value).replace("'", "''")
-        return f"'{escaped}'"
-
-    def _array(self, items: List[str]) -> str:
-        """Convert list to PostgreSQL array"""
-        if not items:
-            return "ARRAY[]::text[]"
-        quoted_items = [self._quote(item).strip("'") for item in items]
-        array_str = "ARRAY[" + ",".join([f"'{item}'" for item in quoted_items]) + "]"
-        return array_str
-
-    def _quote_vector(self, embedding: List[float]) -> str:
-        """
-        Convert embedding list to PostgreSQL vector format
-
-        Args:
-            embedding: List of floats (768 dimensions)
-
-        Returns:
-            Formatted string like '[0.1,0.2,...]'::vector
-        """
-        if not embedding:
-            return "NULL"
-
-        # PostgreSQL vector format: [0.1,0.2,0.3,...]
-        vec_str = '[' + ','.join(str(float(x)) for x in embedding) + ']'
-        return f"'{vec_str}'::vector"
-
-    def get_all_documents_with_embeddings(self, mode: str = None) -> List[Dict]:
-        """
-        Get all documents with their summary embeddings from database
-
-        Args:
-            mode: Optional filter by mode ('paragraph' or 'full-doc')
-
-        Returns:
-            List of dicts with id, title, mode, category, summary, and embedding
-        """
-        mode_filter = ""
-        if mode:
-            mode_filter = f"AND d.mode = '{mode}'"
-
-        sql = f"""
-        SELECT
-            d.id,
-            d.title,
-            d.category,
-            d.mode,
-            d.summary,
-            d.content,
-            d.created_at,
-            d.updated_at
-        FROM documents d
-        WHERE d.summary IS NOT NULL
-        {mode_filter}
-        ORDER BY d.created_at DESC;
-        """
-
-        try:
-            # Use a unique record separator to handle multi-line content
-            # Use ASCII 30 (record separator) as delimiter between rows
-            result = subprocess.run(
-                ["docker", "exec", self.container_name,
-                 "psql", "-U", self.user, "-d", self.database,
-                 "-t", "-A", "-F", "|||", "-R", "\x1e", "-c", sql],
-                capture_output=True,
-                text=True,
-                check=True
-            )
-
-            documents = []
-            # Split by record separator (handles multi-line content correctly)
-            records = result.stdout.strip().split('\x1e')
-            for record in records:
-                if not record.strip():
-                    continue
-                parts = record.split('|||')
-                if len(parts) >= 8:
-                    doc_id, title, category, mode, summary, content, created_at, updated_at = parts[:8]
-
-                    # Now get the embedding for this document
-                    emb_sql = f"""
-                    SELECT embedding::text
-                    FROM embeddings
-                    WHERE entity_type = 'document_summary' AND entity_id = '{doc_id}';
-                    """
-
-                    emb_result = subprocess.run(
-                        ["docker", "exec", self.container_name,
-                         "psql", "-U", self.user, "-d", self.database,
-                         "-t", "-A", "-c", emb_sql],
-                        capture_output=True,
-                        text=True,
-                        check=False
-                    )
-
-                    # Parse embedding from PostgreSQL vector format [0.1,0.2,...]
-                    embedding = None
-                    if emb_result.returncode == 0 and emb_result.stdout.strip():
-                        emb_str = emb_result.stdout.strip()
-                        # Remove brackets and split by comma
-                        if emb_str.startswith('[') and emb_str.endswith(']'):
-                            emb_str = emb_str[1:-1]
-                            embedding = [float(x) for x in emb_str.split(',')]
-
-                    documents.append({
-                        'id': doc_id,
-                        'title': title,
-                        'category': category,
-                        'mode': mode,
-                        'summary': summary,
-                        'content': content,
-                        'embedding': embedding,
-                        'created_at': created_at,
-                        'updated_at': updated_at
-                    })
-
-            return documents
-
-        except Exception as e:
-            print(f"  ❌ Error fetching documents: {e}")
-            return []
-
-    def search_similar_documents(
-        self,
-        query_embedding: List[float],
-        mode: str = None,
-        limit: int = 10,
-        min_similarity: float = 0.0
-    ) -> List[Dict]:
-        """
-        Search for similar documents using PostgreSQL vector similarity
-
-        This method uses PostgreSQL's native vector operations with the HNSW index
-        for extremely fast similarity search (200-600x faster than Python).
-
-        Args:
-            query_embedding: Query embedding vector (768 dimensions)
-            mode: Optional filter by mode ('paragraph' or 'full-doc')
-            limit: Maximum number of results to return (default: 10)
-            min_similarity: Minimum similarity score (0-1, default: 0.0)
-
-        Returns:
-            List of dicts with document info and similarity scores:
-            [
-                {
-                    'id': 'doc_id',
-                    'title': '...',
-                    'category': '...',
-                    'mode': '...',
-                    'summary': '...',
-                    'content': '...',
-                    'embedding': [...],
-                    'similarity': 0.95,
-                    'created_at': datetime,
-                    'updated_at': datetime
-                }
-            ]
-        """
-        try:
-            # Build mode filter
-            mode_filter = ""
-            if mode:
-                mode_filter = f"AND d.mode = '{mode}'"
-
-            # Convert embedding to PostgreSQL vector format
-            query_vec = self._quote_vector(query_embedding)
-
-            # PostgreSQL cosine similarity: 1 - (embedding <=> query)
-            # The <=> operator returns cosine distance (0 = identical, 2 = opposite)
-            # Convert to similarity: similarity = 1 - (distance / 2)
-            # Simplified: similarity = 1 - distance when distance is in [0, 2]
-            # But pgvector already normalizes, so: similarity = 1 - distance
-            sql = f"""
-            SELECT
-                d.id,
-                d.title,
-                d.category,
-                d.mode,
-                d.summary,
-                d.content,
-                d.created_at,
-                d.updated_at,
-                e.embedding,
-                -- Cosine similarity (1 = identical, 0 = perpendicular, -1 = opposite)
-                1 - (e.embedding <=> {query_vec}) AS similarity
-            FROM documents d
-            INNER JOIN embeddings e ON e.entity_type = 'document_summary' AND e.entity_id = d.id
-            WHERE d.summary IS NOT NULL
-            {mode_filter}
-            AND (1 - (e.embedding <=> {query_vec})) >= {min_similarity}
-            ORDER BY e.embedding <=> {query_vec}
-            LIMIT {limit};
-            """
-
-            # Execute query using docker exec
-            result = subprocess.run(
-                ["docker", "exec", self.container_name,
-                 "psql", "-U", self.user, "-d", self.database,
-                 "-t",  # tuples only (no headers/footers)
-                 "-c", sql],
-                capture_output=True,
-                text=True,
-                check=False
-            )
-
-            # Check for errors
-            if result.returncode != 0:
-                print(f"  ❌ psql error: {result.stderr}")
-                return []
-
-            # Parse results
-            documents = []
-            if result.stdout and result.stdout.strip():
-                lines = result.stdout.strip().split('\n')
-
-                # Skip header and separator lines
-                data_lines = [line for line in lines if line and '─' not in line and not line.startswith(' id ')]
-
-                for line in data_lines:
-                    # Skip empty lines
-                    if not line.strip():
-                        continue
-
-                    parts = line.split('|')
-                    if len(parts) >= 10:
-                        try:
-                            doc_id = parts[0].strip()
-                            title = parts[1].strip()
-                            category = parts[2].strip()
-                            mode_val = parts[3].strip()
-                            summary = parts[4].strip()
-                            content = parts[5].strip()
-                            created_at = parts[6].strip()
-                            updated_at = parts[7].strip()
-                            embedding_str = parts[8].strip()
-                            similarity_str = parts[9].strip()
-
-                            # Skip if essential fields are empty
-                            if not doc_id or not title or not similarity_str:
-                                continue
-
-                            similarity = float(similarity_str)
-
-                            # Parse embedding from PostgreSQL vector format [0.1,0.2,...]
-                            embedding = None
-                            if embedding_str and embedding_str.startswith('[') and embedding_str.endswith(']'):
-                                try:
-                                    embedding = [float(x) for x in embedding_str[1:-1].split(',')]
-                                except:
-                                    pass
-
-                            documents.append({
-                                'id': doc_id,
-                                'title': title,
-                                'category': category,
-                                'mode': mode_val,
-                                'summary': summary,
-                                'content': content,
-                                'embedding': embedding,
-                                'similarity': similarity,
-                                'created_at': created_at,
-                                'updated_at': updated_at
-                            })
-                        except (ValueError, IndexError) as e:
-                            # Skip malformed lines
-                            continue
-
-            return documents
-
-        except Exception as e:
-            print(f"  ❌ Error searching similar documents: {e}")
-            import traceback
-            traceback.print_exc()
-            return []
-
-    def search_similar_sections(
-        self,
-        query_embedding: List[float],
-        mode: str = None,
-        limit: int = 10,
-        min_similarity: float = 0.0
-    ) -> List[Dict]:
-        """
-        Search for similar sections using PostgreSQL vector similarity
-
-        Args:
-            query_embedding: Query embedding vector (768 dimensions)
-            mode: Optional filter by document mode ('paragraph' or 'full-doc')
-            limit: Maximum number of results to return (default: 10)
-            min_similarity: Minimum similarity score (0-1, default: 0.0)
-
-        Returns:
-            List of dicts with section info, parent document info, and similarity scores
-        """
-        try:
-            # Build mode filter
-            mode_filter = ""
-            if mode:
-                mode_filter = f"AND d.mode = '{mode}'"
-
-            # Convert embedding to PostgreSQL vector format
-            query_vec = self._quote_vector(query_embedding)
-
-            sql = f"""
-            SELECT
-                s.id,
-                s.document_id,
-                s.section_index,
-                s.header,
-                s.content,
-                s.token_count,
-                s.keywords,
-                s.topics,
-                s.section_type,
-                d.title as document_title,
-                d.category as document_category,
-                d.mode as document_mode,
-                1 - (e.embedding <=> {query_vec}) AS similarity
-            FROM semantic_sections s
-            INNER JOIN embeddings e ON e.entity_type = 'section' AND e.entity_id = s.id
-            INNER JOIN documents d ON s.document_id = d.id
-            WHERE e.embedding IS NOT NULL
-            {mode_filter}
-            AND (1 - (e.embedding <=> {query_vec})) >= {min_similarity}
-            ORDER BY e.embedding <=> {query_vec}
-            LIMIT {limit};
-            """
-
-            result = subprocess.run(
-                ["docker", "exec", self.container_name,
-                 "psql", "-U", "postgres", "-d", self.database,
-                 "-t", "-A", "-F", "|||", "-R", "\x1e", "-c", sql],
-                capture_output=True,
-                text=True,
-                check=False
-            )
-
-            if result.returncode != 0:
-                print(f"  ❌ psql error: {result.stderr}")
-                return []
-
-            # Parse results
-            sections = []
-            if result.stdout and result.stdout.strip():
-                records = result.stdout.strip().split('\x1e')
-
-                for record in records:
-                    if not record.strip():
-                        continue
-
-                    parts = record.split('|||')
-                    if len(parts) >= 13:
-                        try:
-                            sections.append({
-                                'id': parts[0].strip(),
-                                'document_id': parts[1].strip(),
-                                'section_index': int(parts[2].strip()),
-                                'header': parts[3].strip(),
-                                'content': parts[4].strip(),
-                                'token_count': int(parts[5].strip()),
-                                'keywords': parts[6].strip() if parts[6].strip() else None,
-                                'topics': parts[7].strip() if parts[7].strip() else None,
-                                'section_type': parts[8].strip(),
-                                'document_title': parts[9].strip(),
-                                'document_category': parts[10].strip(),
-                                'document_mode': parts[11].strip(),
-                                'similarity': float(parts[12].strip())
-                            })
-                        except (ValueError, IndexError):
-                            continue
-
-            return sections
-
-        except Exception as e:
-            print(f"  ❌ Error searching similar sections: {e}")
-            import traceback
-            traceback.print_exc()
-            return []
-
-    def search_similar_propositions(
-        self,
-        query_embedding: List[float],
-        mode: str = None,
-        limit: int = 10,
-        min_similarity: float = 0.0
-    ) -> List[Dict]:
-        """
-        Search for similar propositions using PostgreSQL vector similarity
-
-        Args:
-            query_embedding: Query embedding vector (768 dimensions)
-            mode: Optional filter by document mode ('paragraph' or 'full-doc')
-            limit: Maximum number of results to return (default: 10)
-            min_similarity: Minimum similarity score (0-1, default: 0.0)
-
-        Returns:
-            List of dicts with proposition info, parent section/document info, and similarity scores
-        """
-        try:
-            # Build mode filter
-            mode_filter = ""
-            if mode:
-                mode_filter = f"AND d.mode = '{mode}'"
-
-            # Convert embedding to PostgreSQL vector format
-            query_vec = self._quote_vector(query_embedding)
-
-            sql = f"""
-            SELECT
-                p.id,
-                p.section_id,
-                p.proposition_index,
-                p.content,
-                p.token_count,
-                p.proposition_type,
-                p.entities,
-                p.keywords,
-                s.document_id,
-                s.section_index,
-                s.header as section_header,
-                d.title as document_title,
-                d.category as document_category,
-                d.mode as document_mode,
-                1 - (e.embedding <=> {query_vec}) AS similarity
-            FROM semantic_propositions p
-            INNER JOIN embeddings e ON e.entity_type = 'proposition' AND e.entity_id = p.id
-            INNER JOIN semantic_sections s ON p.section_id = s.id
-            INNER JOIN documents d ON s.document_id = d.id
-            WHERE e.embedding IS NOT NULL
-            {mode_filter}
-            AND (1 - (e.embedding <=> {query_vec})) >= {min_similarity}
-            ORDER BY e.embedding <=> {query_vec}
-            LIMIT {limit};
-            """
-
-            result = subprocess.run(
-                ["docker", "exec", self.container_name,
-                 "psql", "-U", "postgres", "-d", self.database,
-                 "-t", "-A", "-F", "|||", "-R", "\x1e", "-c", sql],
-                capture_output=True,
-                text=True,
-                check=False
-            )
-
-            if result.returncode != 0:
-                print(f"  ❌ psql error: {result.stderr}")
-                return []
-
-            # Parse results
-            propositions = []
-            if result.stdout and result.stdout.strip():
-                records = result.stdout.strip().split('\x1e')
-
-                for record in records:
-                    if not record.strip():
-                        continue
-
-                    parts = record.split('|||')
-                    if len(parts) >= 15:
-                        try:
-                            propositions.append({
-                                'id': parts[0].strip(),
-                                'section_id': parts[1].strip(),
-                                'proposition_index': int(parts[2].strip()),
-                                'content': parts[3].strip(),
-                                'token_count': int(parts[4].strip()),
-                                'proposition_type': parts[5].strip(),
-                                'entities': parts[6].strip() if parts[6].strip() else None,
-                                'keywords': parts[7].strip() if parts[7].strip() else None,
-                                'document_id': parts[8].strip(),
-                                'section_index': int(parts[9].strip()),
-                                'section_header': parts[10].strip(),
-                                'document_title': parts[11].strip(),
-                                'document_category': parts[12].strip(),
-                                'document_mode': parts[13].strip(),
-                                'similarity': float(parts[14].strip())
-                            })
-                        except (ValueError, IndexError):
-                            continue
-
-            return propositions
-
-        except Exception as e:
-            print(f"  ❌ Error searching similar propositions: {e}")
-            import traceback
-            traceback.print_exc()
-            return []
 
     def insert_documents_batch(self, documents: List[Dict]) -> Dict:
         """
@@ -836,7 +195,7 @@ ON CONFLICT (entity_type, entity_id) DO UPDATE SET embedding = EXCLUDED.embeddin
             documents: List of document dicts
 
         Returns:
-            Results dict with success/fail counts
+            Result dict with success_count, failed_docs
         """
         print(f"\n{'='*80}")
         print(f"💾 BATCH DATABASE INSERTION")
@@ -844,114 +203,566 @@ ON CONFLICT (entity_type, entity_id) DO UPDATE SET embedding = EXCLUDED.embeddin
         print(f"Documents to insert: {len(documents)}")
 
         success_count = 0
-        fail_count = 0
         failed_docs = []
 
         for i, doc in enumerate(documents, 1):
-            print(f"\n[{i}/{len(documents)}] Inserting: {doc['title']}")
+            print(f"\n[{i}/{len(documents)}] Inserting: {doc.get('title', 'Unknown')}")
+
             if self.insert_document(doc):
                 success_count += 1
+                print(f"  ✅ Inserted successfully")
             else:
-                fail_count += 1
-                failed_docs.append(doc['title'])
+                failed_docs.append(doc.get('id', f'doc_{i}'))
+                print(f"  ❌ Failed")
 
-        # Print summary
         print(f"\n{'='*80}")
         print(f"📊 INSERTION SUMMARY")
         print(f"{'='*80}")
         print(f"\n✅ Success: {success_count}/{len(documents)}")
-        print(f"❌ Failed: {fail_count}/{len(documents)}")
 
         if failed_docs:
+            print(f"❌ Failed: {len(failed_docs)}/{len(documents)}")
             print(f"\nFailed documents:")
-            for title in failed_docs:
-                print(f"   • {title}")
+            for doc_id in failed_docs[:5]:
+                print(f"   • {doc_id}")
+            if len(failed_docs) > 5:
+                print(f"   ... and {len(failed_docs) - 5} more")
 
         print(f"\n{'='*80}")
 
         return {
-            "success_count": success_count,
-            "fail_count": fail_count,
-            "failed_docs": failed_docs,
-            "total": len(documents)
+            'success_count': success_count,
+            'total': len(documents),
+            'failed_docs': failed_docs
         }
 
-    def get_document_stats(self) -> Dict:
+    def get_document_by_id(self, doc_id: str) -> Optional[Dict]:
+        """
+        Get document by ID with all chunks
+
+        Args:
+            doc_id: Document ID
+
+        Returns:
+            Document dict with chunks, or None
+        """
+        try:
+            # Get document
+            doc_query = """
+                SELECT id, title, content, summary, category,
+                       keywords, source_urls, created_at, updated_at
+                FROM documents
+                WHERE id = %s
+            """
+
+            results = self._execute_query(doc_query, (doc_id,))
+
+            if not results:
+                return None
+
+            # Parse document row (handle pipes in content/summary)
+            # Format: id|title|content|summary|category|keywords|source_urls|created_at|updated_at
+            # Use rsplit to separate predictable end fields
+            # NOTE: Content may contain newlines, so join all result lines back together
+            row = '\n'.join(results)
+
+            # Split from right to get last 4 predictable fields: keywords|source_urls|created_at|updated_at
+            right_parts = row.rsplit('|', maxsplit=4)
+
+            if len(right_parts) < 5:
+                print(f"  ⚠️  Malformed document row")
+                return None
+
+            # Now split the left part (id|title|content|summary|category) with maxsplit=4
+            left_parts = right_parts[0].split('|', maxsplit=4)
+
+            if len(left_parts) < 5:
+                print(f"  ⚠️  Malformed document row (left fields)")
+                return None
+
+            document = {
+                'id': left_parts[0],
+                'title': left_parts[1],
+                'content': left_parts[2],
+                'summary': left_parts[3],
+                'category': left_parts[4],
+                'keywords': self._parse_array(right_parts[1]) if right_parts[1] != '' else [],
+                'source_urls': self._parse_array(right_parts[2]) if right_parts[2] != '' else [],
+                'created_at': right_parts[3],
+                'updated_at': right_parts[4]
+            }
+
+            # Get chunks
+            chunk_query = """
+                SELECT id, content, chunk_index, token_count
+                FROM chunks
+                WHERE document_id = %s
+                ORDER BY chunk_index
+            """
+
+            chunk_results = self._execute_query(chunk_query, (doc_id,))
+
+            chunks = []
+            # Group chunk result lines that belong to the same chunk
+            # Each chunk starts when we see a new chunk_index value at the end
+            current_chunk_lines = []
+            for line in chunk_results:
+                # Check if this line ends with a chunk_index pattern (e.g., "|0|123")
+                # Split from right to see if we have the pattern
+                test_parts = line.rsplit('|', maxsplit=2)
+                if len(test_parts) == 3 and test_parts[1].isdigit() and test_parts[2].isdigit():
+                    # This is the last line of a chunk (or a single-line chunk)
+                    current_chunk_lines.append(line)
+                    chunk_row = '\n'.join(current_chunk_lines)
+
+                    # Parse chunk row (content may contain pipes and newlines)
+                    # Format: id|content|chunk_index|token_count
+                    # Split from right to get predictable last 2 fields
+                    right_parts = chunk_row.rsplit('|', maxsplit=2)
+
+                    if len(right_parts) >= 3:
+                        # Split left part to get id|content
+                        left_parts = right_parts[0].split('|', maxsplit=1)
+
+                        if len(left_parts) >= 2:
+                            chunks.append({
+                                'id': left_parts[0],
+                                'content': left_parts[1],
+                                'chunk_index': int(right_parts[1]),
+                                'token_count': int(right_parts[2])
+                            })
+
+                    # Reset for next chunk
+                    current_chunk_lines = []
+                else:
+                    # This line is part of multi-line content, accumulate it
+                    current_chunk_lines.append(line)
+
+            document['chunks'] = chunks
+
+            return document
+
+        except Exception as e:
+            print(f"  ❌ Error getting document '{doc_id}': {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+
+    def search_parent_documents(
+        self,
+        query_embedding: list,
+        top_k: int = 3,
+        similarity_threshold: float = 0.5
+    ) -> List[Dict]:
+        """
+        Parent Document Retrieval: Search chunks, return full documents
+
+        Args:
+            query_embedding: Query embedding vector
+            top_k: Number of documents to return
+            similarity_threshold: Minimum similarity score
+
+        Returns:
+            List of documents with scores and matching info
+        """
+        try:
+            # Use the database function we created in schema
+            # Use parameterized query to avoid quoting issues
+            import json
+            vector_json = json.dumps(query_embedding)
+
+            query = f"""
+                SELECT * FROM search_parent_documents(
+                    %s::vector(768),
+                    {similarity_threshold},
+                    {top_k}
+                )
+            """
+
+            results = self._execute_query(query, (vector_json,))
+
+            # FIX: Group lines that belong to the same document
+            # Each document record has 8 fields separated by 7 pipes: id|title|content|summary|keywords|source_urls|score|count
+            # When content/summary have newlines, they get split across multiple result lines
+            # Strategy: Detect document boundaries by counting pipes from the right
+
+            document_records = []
+            current_record_lines = []
+
+            for line in results:
+                # Count pipes from the right to detect if this completes a record
+                # A complete record has at least 7 pipes (8 fields)
+                pipe_count = line.count('|')
+
+                # Check if this line could be the end of a record by splitting from right
+                right_parts = line.rsplit('|', maxsplit=4)
+
+                # If we can split into 5 parts from right, this might be the last line of a record
+                # The last 4 fields after document ID should be: keywords|source_urls|score|count
+                # These are predictable: keywords and source_urls are {...}, score is float, count is int
+                if len(right_parts) == 5:
+                    # Check if the last part looks like an integer (matching_chunk_count)
+                    try:
+                        int(right_parts[4])
+                        # Check if second-to-last looks like a float (score)
+                        float(right_parts[3])
+                        # This looks like the end of a record
+                        current_record_lines.append(line)
+                        # Join all accumulated lines for this record
+                        full_record = '\n'.join(current_record_lines)
+                        document_records.append(full_record)
+                        current_record_lines = []
+                        continue
+                    except (ValueError, IndexError):
+                        pass
+
+                # Not the end of a record, accumulate this line
+                current_record_lines.append(line)
+
+            # Handle any remaining lines (shouldn't happen with valid data)
+            if current_record_lines:
+                full_record = '\n'.join(current_record_lines)
+                document_records.append(full_record)
+
+            documents = []
+            for row in document_records:
+                # Parse carefully since content and summary may contain pipes and newlines
+                # Format: id|title|content|summary|keywords|source_urls|score|count
+                # Strategy: rsplit from right to get predictable fields first
+
+                # Split from right to get last 4 predictable fields: keywords|source_urls|score|count
+                right_parts = row.rsplit('|', maxsplit=4)
+
+                if len(right_parts) < 5:
+                    print(f"  ⚠️  Skipping malformed row (expected at least 5 parts)")
+                    continue
+
+                # Now split the left part (id|title|content|summary) with maxsplit=3
+                left_parts = right_parts[0].split('|', maxsplit=3)
+
+                if len(left_parts) < 4:
+                    print(f"  ⚠️  Skipping malformed row (expected 4 left fields, got {len(left_parts)})")
+                    continue
+
+                doc = {
+                    'id': left_parts[0],
+                    'title': left_parts[1],
+                    'content': left_parts[2],
+                    'summary': left_parts[3],
+                    'keywords': self._parse_array(right_parts[1]) if right_parts[1] != '' else [],
+                    'source_urls': self._parse_array(right_parts[2]) if right_parts[2] != '' else [],
+                    'score': float(right_parts[3]) if right_parts[3] else 0.0,
+                    'matching_chunks': int(right_parts[4]) if right_parts[4] else 0
+                }
+
+                # Get all chunks for this document
+                chunk_query = """
+                    SELECT id, content, chunk_index, token_count
+                    FROM chunks
+                    WHERE document_id = %s
+                    ORDER BY chunk_index
+                """
+
+                chunk_results = self._execute_query(chunk_query, (doc['id'],))
+
+                # FIX: Handle chunks with newlines in content (same as get_document_by_id fix)
+                chunks = []
+                current_chunk_lines = []
+                for line in chunk_results:
+                    # Check if this line ends with a chunk_index pattern (e.g., "|0|123")
+                    # Split from right to see if we have the pattern
+                    test_parts = line.rsplit('|', maxsplit=2)
+                    if len(test_parts) == 3 and test_parts[1].isdigit() and test_parts[2].isdigit():
+                        # This is the last line of a chunk (or a single-line chunk)
+                        current_chunk_lines.append(line)
+                        chunk_row = '\n'.join(current_chunk_lines)
+
+                        # Parse chunk row (content may contain pipes and newlines)
+                        # Format: id|content|chunk_index|token_count
+                        # Split from right to get predictable last 2 fields
+                        right_parts = chunk_row.rsplit('|', maxsplit=2)
+
+                        if len(right_parts) >= 3:
+                            # Split left part to get id|content
+                            left_parts = right_parts[0].split('|', maxsplit=1)
+
+                            if len(left_parts) >= 2:
+                                chunks.append({
+                                    'id': left_parts[0],
+                                    'content': left_parts[1],
+                                    'chunk_index': int(right_parts[1]),
+                                    'token_count': int(right_parts[2])
+                                })
+
+                        # Reset for next chunk
+                        current_chunk_lines = []
+                    else:
+                        # This line is part of multi-line content, accumulate it
+                        current_chunk_lines.append(line)
+
+                doc['chunks'] = chunks
+                documents.append(doc)
+
+            return documents
+
+        except Exception as e:
+            print(f"  ❌ Error searching documents: {e}")
+            import traceback
+            traceback.print_exc()
+            return []
+
+    def update_document_with_chunks(self, document: Dict) -> bool:
+        """
+        Update document and replace all chunks (atomic)
+
+        Critical for merge: ensures chunks always match document content
+
+        Args:
+            document: Updated document with new chunks
+
+        Returns:
+            Success boolean
+        """
+        try:
+            # Start transaction
+            self._execute_query("BEGIN", fetch=False)
+
+            # Update document
+            update_query = """
+                UPDATE documents SET
+                    content = %s,
+                    summary = %s,
+                    keywords = %s,
+                    source_urls = %s,
+                    updated_at = NOW(),
+                    embedding = %s::vector(768)
+                WHERE id = %s
+            """
+
+            self._execute_query(
+                update_query,
+                (
+                    document['content'],
+                    document.get('summary', ''),
+                    document.get('keywords', []),
+                    document.get('source_urls', []),
+                    json.dumps(document['embedding']),
+                    document['id']
+                ),
+                fetch=False
+            )
+
+            # Delete old chunks
+            delete_query = "DELETE FROM chunks WHERE document_id = %s"
+            self._execute_query(delete_query, (document['id'],), fetch=False)
+
+            # Insert new chunks
+            chunks = document.get('chunks', [])
+            for chunk in chunks:
+                chunk_query = """
+                    INSERT INTO chunks (
+                        id, document_id, content, chunk_index,
+                        token_count, embedding
+                    ) VALUES (%s, %s, %s, %s, %s, %s::vector(768))
+                """
+
+                chunk_id = chunk.get('id', f"{document['id']}_chunk_{chunk['chunk_index']}")
+
+                self._execute_query(
+                    chunk_query,
+                    (
+                        chunk_id,
+                        document['id'],
+                        chunk['content'],
+                        chunk['chunk_index'],
+                        chunk['token_count'],
+                        json.dumps(chunk['embedding'])
+                    ),
+                    fetch=False
+                )
+
+            # Record merge if present
+            if 'merge_history' in document:
+                merge_query = """
+                    INSERT INTO merge_history (
+                        target_doc_id, source_topic_title,
+                        merge_strategy, changes_made
+                    ) VALUES (%s, %s, %s, %s)
+                """
+
+                self._execute_query(
+                    merge_query,
+                    (
+                        document['id'],
+                        document['merge_history'].get('source_topic_title', ''),
+                        document['merge_history'].get('merge_strategy', ''),
+                        document['merge_history'].get('changes_made', '')
+                    ),
+                    fetch=False
+                )
+
+            # Commit transaction
+            self._execute_query("COMMIT", fetch=False)
+
+            return True
+
+        except Exception as e:
+            # Rollback on error
+            self._execute_query("ROLLBACK", fetch=False)
+            print(f"  ❌ Error updating document: {e}")
+            return False
+
+    def get_all_documents_with_embeddings(self) -> List[Dict]:
+        """
+        Get all documents with basic info (for merge decisions and UI list view)
+
+        Returns:
+            List of documents with id, title, summary, keywords, category, chunk_count, content_length
+        """
+        try:
+            query = """
+                SELECT
+                    d.id,
+                    d.title,
+                    d.summary,
+                    d.category,
+                    d.keywords,
+                    d.source_urls,
+                    LENGTH(d.content) as content_length,
+                    COUNT(c.id) as chunk_count
+                FROM documents d
+                LEFT JOIN chunks c ON d.id = c.document_id
+                GROUP BY d.id, d.title, d.summary, d.category, d.keywords, d.source_urls, d.content
+                ORDER BY d.created_at DESC
+            """
+
+            results = self._execute_query(query)
+
+            # FIX: Group lines that belong to the same document record
+            # Format: id|title|summary|category|keywords|source_urls|content_length|chunk_count (8 fields)
+            # Problem: summary can contain newlines, causing split across multiple array elements
+            document_records = []
+            current_record_lines = []
+
+            for line in results:
+                # Try to detect if this line ends a complete record
+                # Strategy: A complete record has exactly 8 pipe-separated fields
+                # Check from right: last 5 fields are category|keywords|source_urls|content_length|chunk_count
+                right_parts = line.rsplit('|', maxsplit=5)
+
+                if len(right_parts) == 6:
+                    # This could be the end of a record
+                    # Validation: keywords and source_urls should be arrays (start with '{')
+                    # content_length and chunk_count should be numbers
+                    keywords_field = right_parts[2]
+                    urls_field = right_parts[3]
+                    content_len_field = right_parts[4]
+                    chunk_count_field = right_parts[5]
+
+                    # If fields look correct, this is likely a complete record end
+                    if ((keywords_field.startswith('{') or keywords_field == '') and
+                        (urls_field.startswith('{') or urls_field == '') and
+                        content_len_field.isdigit() and chunk_count_field.isdigit()):
+                        # This is the end of a record
+                        current_record_lines.append(line)
+                        full_record = '\n'.join(current_record_lines)
+                        document_records.append(full_record)
+                        current_record_lines = []
+                        continue
+
+                # Otherwise, accumulate this line
+                current_record_lines.append(line)
+
+            # Handle any remaining lines
+            if current_record_lines:
+                full_record = '\n'.join(current_record_lines)
+                document_records.append(full_record)
+
+            documents = []
+            for row in document_records:
+                # Now parse the complete record
+                # Split from right to preserve newlines in summary field
+                right_parts = row.rsplit('|', maxsplit=5)
+
+                if len(right_parts) >= 6:
+                    # Split the left part to get id and title
+                    left_parts = right_parts[0].split('|', maxsplit=2)
+
+                    if len(left_parts) >= 3:
+                        doc = {
+                            'id': left_parts[0],
+                            'title': left_parts[1],
+                            'summary': left_parts[2],  # Can contain newlines
+                            'category': right_parts[1],
+                            'keywords': self._parse_array(right_parts[2]) if right_parts[2] != '' else [],
+                            'source_urls': self._parse_array(right_parts[3]) if right_parts[3] != '' else [],
+                            'content_length': int(right_parts[4]) if right_parts[4].isdigit() else 0,
+                            'chunk_count': int(right_parts[5]) if right_parts[5].isdigit() else 0
+                        }
+                        documents.append(doc)
+
+            return documents
+
+        except Exception as e:
+            print(f"  ❌ Error getting documents: {e}")
+            return []
+
+    def _parse_array(self, array_str: str) -> List[str]:
+        """Parse PostgreSQL array string to Python list"""
+        if not array_str or array_str == '{}':
+            return []
+
+        # Remove braces and split
+        array_str = array_str.strip('{}')
+        if not array_str:
+            return []
+
+        return [item.strip('"') for item in array_str.split(',')]
+
+    def begin_transaction(self):
+        """Begin database transaction"""
+        self._execute_query("BEGIN", fetch=False)
+
+    def commit_transaction(self):
+        """Commit database transaction"""
+        self._execute_query("COMMIT", fetch=False)
+
+    def rollback_transaction(self):
+        """Rollback database transaction"""
+        self._execute_query("ROLLBACK", fetch=False)
+
+    def get_stats(self) -> Dict:
         """Get database statistics"""
         try:
-            # Use simple docker exec for queries
-            result = subprocess.run(
-                ["docker", "exec", self.container_name,
-                 "psql", "-U", self.user, "-d", self.database,
-                 "-t", "-c", "SELECT COUNT(*) FROM documents;"],
-                capture_output=True,
-                text=True,
-                check=True
-            )
-            doc_count = int(result.stdout.strip())
+            query = "SELECT * FROM database_stats"
+            results = self._execute_query(query)
 
-            result = subprocess.run(
-                ["docker", "exec", self.container_name,
-                 "psql", "-U", self.user, "-d", self.database,
-                 "-t", "-c", "SELECT COUNT(*) FROM semantic_sections;"],
-                capture_output=True,
-                text=True,
-                check=True
-            )
-            section_count = int(result.stdout.strip())
+            if results:
+                parts = results[0].split('|')
+                return {
+                    'total_documents': int(parts[0]),
+                    'total_chunks': int(parts[1]),
+                    'total_merges': int(parts[2]),
+                    'avg_chunks_per_doc': float(parts[3]) if parts[3] != '' else 0.0,
+                    'avg_tokens_per_doc': float(parts[4]) if parts[4] != '' else 0.0
+                }
 
-            result = subprocess.run(
-                ["docker", "exec", self.container_name,
-                 "psql", "-U", self.user, "-d", self.database,
-                 "-t", "-c", "SELECT COUNT(*) FROM semantic_propositions;"],
-                capture_output=True,
-                text=True,
-                check=True
-            )
-            prop_count = int(result.stdout.strip())
-
-            result = subprocess.run(
-                ["docker", "exec", self.container_name,
-                 "psql", "-U", self.user, "-d", self.database,
-                 "-t", "-c", "SELECT COUNT(*) FROM embeddings;"],
-                capture_output=True,
-                text=True,
-                check=True
-            )
-            emb_count = int(result.stdout.strip())
-
-            return {
-                "documents": doc_count,
-                "sections": section_count,
-                "propositions": prop_count,
-                "embeddings": emb_count
-            }
+            return {}
 
         except Exception as e:
             print(f"  ❌ Error getting stats: {e}")
             return {}
 
-    def print_stats(self):
-        """Print database statistics"""
-        stats = self.get_document_stats()
 
-        print(f"\n{'='*80}")
-        print(f"📊 DATABASE STATISTICS")
-        print(f"{'='*80}")
-
-        if not stats:
-            print("  ⚠️  Unable to retrieve statistics")
-            return
-
-        print(f"\n📄 Documents: {stats['documents']}")
-        print(f"📑 Sections: {stats['sections']}")
-        print(f"💬 Propositions: {stats['propositions']}")
-        print(f"🔢 Embeddings: {stats['embeddings']}")
-
-        print(f"\n{'='*80}")
+# Backwards compatibility: create alias
+ChunkedDocumentDatabase = SimpleDocumentDatabase
 
 
-# Convenience function
-def create_database(container_name: str = None, database: str = None) -> ChunkedDocumentDatabase:
-    """Create and return database instance"""
-    return ChunkedDocumentDatabase(container_name=container_name, database=database)
+if __name__ == "__main__":
+    # Test database connection
+    db = SimpleDocumentDatabase()
+
+    print("\n📊 Database Statistics:")
+    stats = db.get_stats()
+    for key, value in stats.items():
+        print(f"   {key}: {value}")

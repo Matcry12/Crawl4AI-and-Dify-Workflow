@@ -75,6 +75,14 @@ output/
 *.log
 *.csv
 
+# Crawl output (regenerable test data)
+crawl_output/
+test_crawl/
+
+# Quality check reports (regenerable)
+*_check_*.json
+hallucination_check_*.json
+
 # ============================================================================
 # Database & Cache
 # ============================================================================

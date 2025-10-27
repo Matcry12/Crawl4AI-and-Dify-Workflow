@@ -70,6 +70,38 @@ class BFSCrawler:
         # Parse start URL domain
         self.start_domain = urlparse(start_url).netloc
 
+        # Non-content URL patterns to skip (same as extract_topics.py)
+        self.skip_url_patterns = [
+            'opensearch.xml',
+            'robots.txt',
+            'sitemap.xml',
+            'manifest.json',
+            '.js',
+            '.css',
+            '.png',
+            '.jpg',
+            '.jpeg',
+            '.gif',
+            '.svg',
+            '.ico',
+            '.woff',
+            '.woff2',
+            '.ttf',
+            '.eot',
+            '.pdf',
+            '.zip',
+            '.tar',
+            '.gz',
+            '/search',
+            '/search/',
+            '/api/',
+            '/_next/',
+            '/assets/js/',
+            '/assets/css/',
+            '/static/js/',
+            '/static/css/',
+        ]
+
         # BFS queue and tracking sets
         self.queue = deque([start_url])
         self.visited = set()
@@ -89,6 +121,22 @@ class BFSCrawler:
         print(f"   Max pages: {max_pages}")
         print(f"   Same domain only: {same_domain_only}")
         print(f"   Extract topics: {extract_topics}")
+
+    def should_skip_url(self, url: str) -> bool:
+        """
+        Check if URL should be skipped (non-content files)
+
+        Args:
+            url: URL to check
+
+        Returns:
+            True if should skip, False otherwise
+        """
+        url_lower = url.lower()
+        for pattern in self.skip_url_patterns:
+            if pattern in url_lower:
+                return True
+        return False
 
     def extract_links(self, html: str, base_url: str) -> Set[str]:
         """
@@ -125,6 +173,10 @@ class BFSCrawler:
                     if url_domain != self.start_domain:
                         continue
 
+                # Skip non-content URLs (JS, CSS, images, etc.)
+                if self.should_skip_url(absolute_url):
+                    continue
+
                 links.add(absolute_url)
             except:
                 continue
@@ -157,9 +209,14 @@ class BFSCrawler:
             # Configure browser
             browser_config = BrowserConfig(headless=True, verbose=False)
 
-            # Crawl
+            # Crawl with extended timeout and proper JavaScript rendering
             async with AsyncWebCrawler(config=browser_config) as crawler:
-                crawl_config = CrawlerRunConfig(cache_mode=CacheMode.BYPASS)
+                crawl_config = CrawlerRunConfig(
+                    cache_mode=CacheMode.BYPASS,
+                    page_timeout=120000,        # 120 seconds instead of default 60
+                    wait_until="networkidle",   # Wait for network to be idle (better for JS-heavy sites)
+                    delay_before_return_html=2.0  # Wait 2s for JavaScript to render
+                )
                 crawl_result = await crawler.arun(url=url, config=crawl_config)
 
                 if crawl_result.success:
@@ -231,10 +288,15 @@ class BFSCrawler:
                 self.successful.append(url)
 
                 # Add discovered links to queue
+                links_added = 0
                 for link in result.get('links', []):
                     if link not in self.visited and link not in self.to_visit:
                         self.queue.append(link)
                         self.to_visit.add(link)
+                        links_added += 1
+
+                if links_added > 0:
+                    print(f"     Added {links_added} new links to queue (Queue size: {len(self.queue)})")
 
                 # Save page
                 self.save_page(url, result)

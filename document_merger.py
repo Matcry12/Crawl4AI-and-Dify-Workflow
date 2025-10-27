@@ -1,28 +1,30 @@
 #!/usr/bin/env python3
 """
-Document Merger Module
+Simplified Document Merger Module
 
-Merges new topics with existing documents.
-Supports two modes: paragraph and full-doc
+Merges topics with existing documents and RE-CHUNKS after merge.
+
+CRITICAL: After merging, old chunks no longer match the merged content.
+We MUST delete old chunks and create new chunks from merged content.
 """
 
 import os
 
-# Suppress gRPC warnings (must be set BEFORE importing genai)
+# Suppress gRPC warnings
 os.environ['GRPC_VERBOSITY'] = 'ERROR'
 os.environ['GLOG_minloglevel'] = '2'
 
 from typing import List, Dict, Optional
 import google.generativeai as genai
 from datetime import datetime
-from hybrid_chunker import HybridChunker
+import json
+from simple_quality_chunker import SimpleQualityChunker
 from utils.rate_limiter import get_llm_rate_limiter, get_embedding_rate_limiter
 
 
 class DocumentMerger:
     """
-    Merges topics with existing documents using LLM
-    Supports two modes: paragraph and full-doc
+    Merges topics with existing documents and re-chunks the merged content
     """
 
     def __init__(self, api_key: str = None, model_name: str = None):
@@ -42,597 +44,547 @@ class DocumentMerger:
         genai.configure(api_key=self.api_key)
         self.model = genai.GenerativeModel(self.model_name)
 
-        # Initialize rate limiters
+        # Rate limiters
         self.llm_limiter = get_llm_rate_limiter()
         self.embedding_limiter = get_embedding_rate_limiter()
 
-        # Initialize hybrid chunker
-        self.chunker = HybridChunker(api_key=self.api_key)
+        # Initialize simple quality chunker
+        self.chunker = SimpleQualityChunker(
+            min_tokens=200,
+            max_tokens=400,
+            overlap_tokens=50
+        )
 
-        print("✅ Document merger initialized")
+        print("✅ Simplified document merger initialized")
         print(f"   Model: {self.model_name}")
-        print(f"   Hybrid chunker: enabled")
+        print(f"   Chunker: SimpleQualityChunker (for re-chunking)")
 
-    def merge_paragraph_document(
-        self,
-        topic: Dict,
-        existing_document: Dict
-    ) -> Dict:
+    def create_embedding(self, text: str) -> list:
         """
-        Merge topic with existing paragraph document
+        Create embedding for text using Gemini
 
         Args:
-            topic: New topic to merge
-            existing_document: Existing paragraph document
+            text: Text to embed
 
         Returns:
-            Updated document dictionary
+            768-dimensional embedding vector
         """
-        prompt = f"""Merge this new topic information into the existing paragraph document.
-
-EXISTING DOCUMENT:
-Title: {existing_document['title']}
-Content: {existing_document['content']}
-
-NEW TOPIC TO MERGE:
-Title: {topic['title']}
-Summary: {topic['summary']}
-Description: {topic['description']}
-
-Instructions:
-1. Create a single, well-integrated paragraph that combines BOTH the existing content and new information
-2. Avoid redundancy - merge similar points smoothly
-3. Keep the paragraph concise but comprehensive (6-12 sentences)
-4. Maintain professional tone
-5. Do NOT include title or headings
-6. Ensure all important information from BOTH sources is included
-
-Output only the merged paragraph text, nothing else.
-"""
-
         try:
-            print(f"\n  🔀 Merging paragraph for: {topic['title']} → {existing_document['title']}")
-
-            self.llm_limiter.wait_if_needed()
-            response = self.model.generate_content(prompt)
-            merged_content = response.text.strip()
-
-            updated_document = {
-                "id": existing_document.get('id'),  # Preserve document ID
-                "title": existing_document['title'],
-                "category": existing_document.get('category', topic['category']),
-                "mode": "paragraph",
-                "content": merged_content,
-                "created_at": existing_document.get('created_at', datetime.now().isoformat()),
-                "updated_at": datetime.now().isoformat(),
-                "merged_topics": existing_document.get('merged_topics', []) + [{
-                    "title": topic['title'],
-                    "merged_at": datetime.now().isoformat()
-                }]
-            }
-
-            print(f"  ✅ Paragraph merged ({len(merged_content)} chars)")
-            return updated_document
-
+            self.embedding_limiter.wait_if_needed()
+            result = genai.embed_content(
+                model="models/text-embedding-004",
+                content=text,
+                task_type="retrieval_document"
+            )
+            return result['embedding']
         except Exception as e:
-            print(f"  ❌ Error merging paragraph: {e}")
+            print(f"  ⚠️  Embedding generation failed: {e}")
             return None
 
-    def merge_fulldoc_document(
+    def _parse_hybrid_response(
         self,
-        topic: Dict,
-        existing_document: Dict
-    ) -> Dict:
+        response_text: str,
+        fallback_content: str,
+        existing_document: dict
+    ) -> tuple[str, dict]:
         """
-        Merge topic with existing full document
+        Parse hybrid response format with delimiters and JSON
 
         Args:
-            topic: New topic to merge
-            existing_document: Existing full document
+            response_text: LLM response
+            fallback_content: Content to use if parsing fails
+            existing_document: Original document for fallback metadata
 
         Returns:
-            Updated document dictionary
+            (merged_content, metadata_dict)
         """
-        prompt = f"""Merge this new topic information into the existing full document.
+        import re
 
-EXISTING DOCUMENT:
-Title: {existing_document['title']}
-Content:
-{existing_document['content']}
+        # Extract merged content using delimiters
+        content_pattern = r'===MERGED_CONTENT_START===(.*?)===MERGED_CONTENT_END==='
+        content_match = re.search(content_pattern, response_text, re.DOTALL)
 
-NEW TOPIC TO MERGE:
-Title: {topic['title']}
-Summary: {topic['summary']}
-Description: {topic['description']}
+        if content_match:
+            merged_content = content_match.group(1).strip()
+        else:
+            # Fallback: try to find content without delimiters
+            print(f"  ⚠️  Content delimiters not found, using fallback")
+            merged_content = fallback_content
 
-Instructions:
-1. Carefully read both the existing document and new topic information
-2. Identify where the new information fits best in the existing structure
-3. Merge the new information seamlessly into appropriate sections
-4. If needed, create new sections or subsections for new information
-5. Maintain consistent markdown formatting:
-   - Use ## for main sections
-   - Use ### for subsections
-   - Use bullet points and numbered lists appropriately
-   - Use **bold** for emphasis
-   - Use `code` formatting for technical terms
-6. Avoid redundancy - merge similar information smoothly
-7. Keep the document well-organized and comprehensive
-8. Do NOT include the main title (# Title) - start with sections
-9. Ensure ALL important information from BOTH sources is included
+        # Extract metadata JSON
+        json_pattern = r'===METADATA===(.*?)===METADATA_END==='
+        json_match = re.search(json_pattern, response_text, re.DOTALL)
 
-Output the complete merged markdown document.
-"""
+        metadata = {}
+        if json_match:
+            json_text = json_match.group(1).strip()
 
-        try:
-            print(f"\n  🔀 Merging full document for: {topic['title']} → {existing_document['title']}")
+            # Clean markdown code blocks if present
+            if json_text.startswith('```'):
+                json_text = json_text.split('```')[1]
+                if json_text.strip().startswith('json'):
+                    json_text = json_text.strip()[4:]
+            json_text = json_text.strip()
 
-            self.llm_limiter.wait_if_needed()
-            response = self.model.generate_content(prompt)
-            merged_content = response.text.strip()
-
-            updated_document = {
-                "id": existing_document.get('id'),  # Preserve document ID
-                "title": existing_document['title'],
-                "category": existing_document.get('category', topic['category']),
-                "mode": "full-doc",
-                "content": merged_content,
-                "created_at": existing_document.get('created_at', datetime.now().isoformat()),
-                "updated_at": datetime.now().isoformat(),
-                "merged_topics": existing_document.get('merged_topics', []) + [{
-                    "title": topic['title'],
-                    "merged_at": datetime.now().isoformat()
-                }]
+            try:
+                metadata = json.loads(json_text)
+            except json.JSONDecodeError as e:
+                print(f"  ⚠️  Metadata JSON parsing failed: {e}")
+                # Use fallback metadata
+                metadata = {
+                    "strategy": "unknown",
+                    "summary": existing_document.get('summary', ''),
+                    "changes_made": "Merge completed (metadata parse failed)"
+                }
+        else:
+            # No metadata found, use fallbacks
+            print(f"  ⚠️  Metadata section not found, using defaults")
+            metadata = {
+                "strategy": "unknown",
+                "summary": existing_document.get('summary', ''),
+                "changes_made": "Content merged"
             }
 
-            print(f"  ✅ Full document merged ({len(merged_content)} chars)")
-            return updated_document
+        # Validate merged content is not empty
+        if not merged_content or len(merged_content.strip()) < 100:
+            print(f"  ⚠️  Merged content too short, using fallback")
+            merged_content = fallback_content
 
-        except Exception as e:
-            print(f"  ❌ Error merging full document: {e}")
-            return None
+        return merged_content, metadata
 
     def merge_document(
         self,
         topic: Dict,
-        existing_document: Dict,
-        mode: str = "paragraph"
-    ) -> Dict:
+        existing_document: Dict
+    ) -> Optional[Dict]:
         """
-        Merge topic with existing document in specified mode
+        Merge topic into existing document with RE-CHUNKING
+
+        CRITICAL PROCESS:
+        1. Merge content (LLM)
+        2. Update document metadata
+        3. DELETE old chunks (no longer valid!)
+        4. CREATE new chunks from merged content
+        5. Generate embeddings for new chunks
+        6. Return updated document (database handles atomic save)
 
         Args:
             topic: New topic to merge
-            existing_document: Existing document
-            mode: "paragraph" or "full-doc"
+            existing_document: Existing document to merge into
 
         Returns:
-            Updated document dictionary
+            Merged document with NEW chunks
         """
-        if mode == "paragraph":
-            return self.merge_paragraph_document(topic, existing_document)
-        elif mode == "full-doc":
-            return self.merge_fulldoc_document(topic, existing_document)
-        else:
-            raise ValueError(f"Invalid mode: {mode}. Use 'paragraph' or 'full-doc'")
+        try:
+            doc_title = existing_document.get('title', 'Unknown')
+            topic_title = topic.get('title', 'Unknown')
+
+            print(f"\n  🔀 Merging '{topic_title}' into '{doc_title}'")
+
+            # Step 1: LLM-based merge
+            existing_content = existing_document.get('content', '')
+            new_content = topic.get('content', topic.get('description', ''))
+
+            prompt = f"""Merge the new topic content into the existing document by EXPANDING and ENRICHING it.
+
+EXISTING DOCUMENT:
+Title: {doc_title}
+Content:
+{existing_content}
+
+NEW TOPIC TO MERGE:
+Title: {topic_title}
+Content:
+{new_content}
+
+MERGE STRATEGY - EXPAND, DON'T CONDENSE:
+1. Analyze the new content:
+   - Does it add NEW information? → APPEND it with full detail
+   - Does it provide ADDITIONAL details about existing topics? → MERGE by ADDING the new details
+   - Does it offer a different PERSPECTIVE or EXAMPLE? → INCLUDE both perspectives
+   - Only if it's COMPLETELY IDENTICAL → Skip, but preserve existing
+
+2. Output format (IMPORTANT - follow exactly):
+
+===MERGED_CONTENT_START===
+[Write the complete merged content here]
+[Can include ANY characters, quotes, code blocks, special chars]
+[No JSON escaping needed]
+[Multiple paragraphs welcome]
+===MERGED_CONTENT_END===
+
+===METADATA===
+{{
+  "strategy": "append" | "expand" | "enrich",
+  "summary": "Brief summary (max 200 characters)",
+  "changes_made": "Brief description of what information was ADDED"
+}}
+===METADATA_END===
+
+CRITICAL RULES - INFORMATION EXPANSION:
+✅ DO:
+- PRESERVE 100% of important information from BOTH documents
+- ADD new details, examples, code snippets from the new topic
+- EXPAND explanations with additional context from new content
+- INCLUDE multiple examples if both documents have different ones
+- COMBINE complementary information to create richer content
+- Keep ALL technical details, parameters, warnings from both sources
+- Make the merged document MORE comprehensive than either source alone
+
+❌ DON'T:
+- Summarize or condense existing information
+- Remove details to avoid "redundancy" (detail is valuable!)
+- Choose between two good explanations (include both!)
+- Limit content length (merged docs should be LONGER, not shorter)
+
+GOAL: The merged document should be MORE informative and detailed than the sum of its parts.
+
+OUTPUT FORMAT REMINDER:
+1. First: ===MERGED_CONTENT_START=== ... ===MERGED_CONTENT_END===
+2. Then: ===METADATA=== {{...}} ===METADATA_END===
+"""
+
+            print(f"  🤖 Generating merge with LLM...")
+            self.llm_limiter.wait_if_needed()
+            response = self.model.generate_content(
+                prompt,
+                generation_config=genai.types.GenerationConfig(
+                    temperature=0.1
+                )
+            )
+            response_text = response.text.strip()
+
+            # Parse hybrid response
+            try:
+                merged_content, metadata = self._parse_hybrid_response(
+                    response_text,
+                    existing_content,
+                    existing_document
+                )
+
+                merge_strategy = metadata.get('strategy', 'unknown')
+                updated_summary = metadata.get('summary', existing_document.get('summary', ''))
+                changes_made = metadata.get('changes_made', 'Content merged')
+
+                print(f"  ✅ Merge strategy: {merge_strategy}")
+                print(f"  📝 Changes: {changes_made}")
+
+            except Exception as e:
+                print(f"  ❌ Error parsing merge response: {e}")
+                import traceback
+                traceback.print_exc()
+
+                # Fallback: simple concatenation
+                merged_content = f"{existing_content}\n\n---\n\n{new_content}"
+                updated_summary = existing_document.get('summary', '')
+                merge_strategy = "fallback"
+                changes_made = "Automatic merge (parsing failed)"
+                print(f"  ⚠️  Using fallback merge strategy")
+
+            # Step 2: Update document metadata
+            doc_id = existing_document.get('id')
+
+            # Merge keywords (combine and deduplicate)
+            existing_keywords = set(existing_document.get('keywords', []))
+            new_keywords = set(topic.get('keywords', []))
+            merged_keywords = list(existing_keywords | new_keywords)
+
+            # Merge source URLs (create new list to avoid mutation)
+            existing_urls = list(existing_document.get('source_urls', []))
+            new_url = topic.get('source_url')
+            if new_url and new_url not in existing_urls:
+                existing_urls.append(new_url)
+
+            # Step 3: Generate new document embedding (from updated summary)
+            print(f"  🔢 Generating document embedding...")
+            doc_embedding = self.create_embedding(updated_summary)
+
+            if not doc_embedding:
+                print(f"  ⚠️  Failed to generate document embedding")
+                return None
+
+            # Step 4: RE-CHUNK the merged content (CRITICAL!)
+            print(f"  ✂️  RE-CHUNKING merged content...")
+            print(f"     (Old chunks no longer match merged content)")
+
+            new_chunks = self.chunker.chunk(merged_content, document_id=doc_id)
+
+            if not new_chunks:
+                print(f"  ⚠️  No chunks created from merged content")
+                return None
+
+            print(f"  ✅ Created {len(new_chunks)} new chunks")
+
+            # Step 5: Generate embeddings for new chunks
+            print(f"  🔢 Generating chunk embeddings...")
+            chunks_with_embeddings = []
+
+            for i, chunk in enumerate(new_chunks):
+                chunk_embedding = self.create_embedding(chunk['content'])
+
+                if chunk_embedding:
+                    chunk['embedding'] = chunk_embedding
+                    chunks_with_embeddings.append(chunk)
+                else:
+                    print(f"  ⚠️  Failed to generate embedding for chunk {i+1}")
+
+            if not chunks_with_embeddings:
+                print(f"  ⚠️  No chunks with embeddings")
+                return None
+
+            print(f"  ✅ Generated embeddings for {len(chunks_with_embeddings)}/{len(new_chunks)} chunks")
+
+            # Step 6: Create updated document
+            # Database will handle atomic transaction:
+            # - Update document
+            # - DELETE old chunks WHERE document_id = doc_id
+            # - INSERT new chunks
+            # - Record merge history
+
+            updated_document = {
+                'id': doc_id,
+                'title': doc_title,
+                'content': merged_content,
+                'summary': updated_summary,
+                'category': existing_document.get('category', 'general'),
+                'keywords': merged_keywords,
+                'source_urls': existing_urls,
+                'embedding': doc_embedding,
+                'chunks': chunks_with_embeddings,  # NEW chunks!
+                'created_at': existing_document.get('created_at'),
+                'updated_at': datetime.now().isoformat(),
+                'merge_history': {
+                    'source_topic_title': topic_title,
+                    'merge_strategy': merge_strategy,
+                    'changes_made': changes_made,
+                    'merged_at': datetime.now().isoformat()
+                }
+            }
+
+            print(f"  ✅ Document merged successfully:")
+            print(f"     Content: {len(merged_content)} chars")
+            print(f"     New chunks: {len(chunks_with_embeddings)} (old chunks will be deleted)")
+            print(f"     Keywords: {len(merged_keywords)}")
+            print(f"     Source URLs: {len(existing_urls)}")
+
+            return updated_document
+
+        except Exception as e:
+            print(f"  ❌ Error merging document: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
 
     def merge_documents_batch(
-        self,
-        merge_pairs: List[Dict],
-        mode: str = "paragraph"
-    ) -> Dict:
-        """
-        Merge multiple topic-document pairs in batch
-
-        Args:
-            merge_pairs: List of dicts with 'topic' and 'existing_document'
-            mode: "paragraph" or "full-doc"
-
-        Returns:
-            Results dictionary with merged documents and statistics
-        """
-        print(f"\n{'='*80}")
-        print(f"🔀 BATCH DOCUMENT MERGING ({mode.upper()} mode)")
-        print(f"{'='*80}")
-        print(f"Pairs to merge: {len(merge_pairs)}")
-
-        merged_documents = []
-        failed = []
-
-        for i, pair in enumerate(merge_pairs, 1):
-            topic = pair['topic']
-            existing_doc = pair['existing_document']
-
-            print(f"\n[{i}/{len(merge_pairs)}] Processing merge:")
-            print(f"   Topic: {topic['title']}")
-            print(f"   Document: {existing_doc['title']}")
-
-            merged_doc = self.merge_document(topic, existing_doc, mode)
-
-            if merged_doc:
-                merged_documents.append(merged_doc)
-            else:
-                failed.append(f"{topic['title']} → {existing_doc['title']}")
-
-        # Print summary
-        self._print_batch_summary(merged_documents, failed, mode)
-
-        return {
-            "mode": mode,
-            "merged_documents": merged_documents,
-            "failed": failed,
-            "success_count": len(merged_documents),
-            "fail_count": len(failed),
-            "total": len(merge_pairs)
-        }
-
-    def merge_documents_both_modes(
         self,
         merge_pairs: List[Dict]
     ) -> Dict:
         """
-        Merge documents in BOTH modes for each pair
+        Merge multiple topics with their target documents
 
         Args:
-            merge_pairs: List of dicts with 'topic', 'para_document', and 'fulldoc_document'
+            merge_pairs: List of dicts with:
+                - topic: Topic to merge
+                - existing_document: Document to merge into
 
         Returns:
-            Results dictionary with both paragraph and full-doc merged versions
+            Results dictionary with:
+            - merged_documents: List of merged documents
+            - success_count: Number of successful merges
+            - fail_count: Number of failed merges
+            - failed_merges: List of failed merge titles
         """
         print(f"\n{'='*80}")
-        print(f"🔀 MERGING DOCUMENTS IN BOTH MODES")
+        print(f"🔀 BATCH DOCUMENT MERGE")
         print(f"{'='*80}")
-        print(f"Pairs to merge: {len(merge_pairs)}")
-        print(f"Total merges: {len(merge_pairs) * 2}")
+        print(f"Merges to process: {len(merge_pairs)}")
+        print(f"{'='*80}")
 
-        merged_paragraph = []
-        merged_fulldoc = []
-        failed = []
+        merged_documents = []
+        failed_merges = []
 
         for i, pair in enumerate(merge_pairs, 1):
-            topic = pair['topic']
+            topic = pair.get('topic')
+            existing_doc = pair.get('existing_document')
 
-            print(f"\n{'='*80}")
-            print(f"[{i}/{len(merge_pairs)}] Processing: {topic['title']}")
-            print(f"{'='*80}")
+            if not topic or not existing_doc:
+                print(f"\n[{i}/{len(merge_pairs)}] ⚠️  Invalid merge pair - skipping")
+                failed_merges.append(f"Merge {i} (invalid pair)")
+                continue
 
-            # Merge paragraph version
-            if 'para_document' in pair and pair['para_document']:
-                print(f"\n  🔹 MODE 1: Paragraph")
-                para_merged = self.merge_paragraph_document(topic, pair['para_document'])
-                if para_merged:
-                    merged_paragraph.append(para_merged)
-                else:
-                    failed.append(f"{topic['title']} → {pair['para_document']['title']} (paragraph)")
+            print(f"\n[{i}/{len(merge_pairs)}]", end=" ")
 
-            # Merge full-doc version
-            if 'fulldoc_document' in pair and pair['fulldoc_document']:
-                print(f"\n  🔹 MODE 2: Full Document")
-                full_merged = self.merge_fulldoc_document(topic, pair['fulldoc_document'])
-                if full_merged:
-                    merged_fulldoc.append(full_merged)
-                else:
-                    failed.append(f"{topic['title']} → {pair['fulldoc_document']['title']} (full-doc)")
+            merged_doc = self.merge_document(topic, existing_doc)
 
-        # Print summary
-        self._print_both_modes_summary(merged_paragraph, merged_fulldoc, failed, len(merge_pairs))
+            if merged_doc:
+                merged_documents.append(merged_doc)
+            else:
+                failed_merges.append(f"{topic.get('title', 'Unknown')} → {existing_doc.get('title', 'Unknown')}")
 
-        return {
-            "merged_paragraph": merged_paragraph,
-            "merged_fulldoc": merged_fulldoc,
-            "failed": failed,
-            "paragraph_count": len(merged_paragraph),
-            "fulldoc_count": len(merged_fulldoc),
-            "fail_count": len(failed),
-            "total_pairs": len(merge_pairs),
-            "total_merged": len(merged_paragraph) + len(merged_fulldoc)
+        # Summary
+        success_count = len(merged_documents)
+        fail_count = len(failed_merges)
+
+        print(f"\n{'='*80}")
+        print(f"📊 BATCH MERGE SUMMARY")
+        print(f"{'='*80}")
+        print(f"✅ Success: {success_count}/{len(merge_pairs)} documents merged")
+
+        if fail_count > 0:
+            print(f"❌ Failed: {fail_count} merges")
+            print(f"   Failed merges:")
+            for title in failed_merges[:5]:
+                print(f"   - {title}")
+            if len(failed_merges) > 5:
+                print(f"   ... and {len(failed_merges) - 5} more")
+
+        # Calculate stats
+        total_chunks = sum(len(doc.get('chunks', [])) for doc in merged_documents)
+        avg_chunks = total_chunks / success_count if success_count > 0 else 0
+
+        print(f"\n📈 Statistics:")
+        print(f"   Total new chunks: {total_chunks}")
+        print(f"   Average chunks per doc: {avg_chunks:.1f}")
+        print(f"   ⚠️  Old chunks will be deleted on database save")
+
+        print(f"{'='*80}")
+
+        results = {
+            'merged_documents': merged_documents,
+            'success_count': success_count,
+            'fail_count': fail_count,
+            'failed_merges': failed_merges,
+            'total_merged': success_count,
+            'total_chunks': total_chunks
         }
 
-    def _print_batch_summary(self, merged: List[Dict], failed: List[str], mode: str):
-        """Print batch merge summary"""
-        print(f"\n{'='*80}")
-        print(f"📊 BATCH MERGE SUMMARY ({mode.upper()})")
-        print(f"{'='*80}")
+        return results
 
-        print(f"\n✅ Success: {len(merged)}")
-        if merged:
-            for doc in merged:
-                merge_count = len(doc.get('merged_topics', []))
-                print(f"   • {doc['title']} ({len(doc['content'])} chars, {merge_count} topics merged)")
-
-        if failed:
-            print(f"\n❌ Failed: {len(failed)}")
-            for pair in failed:
-                print(f"   • {pair}")
-
-        print(f"\n{'='*80}")
-
-    def _print_both_modes_summary(
+    def save_merged_documents(
         self,
-        merged_para: List[Dict],
-        merged_full: List[Dict],
-        failed: List[str],
-        total_pairs: int
+        results: Dict,
+        output_dir: str = "merged_documents",
+        save_to_db: bool = True
     ):
-        """Print summary for both modes merge"""
-        print(f"\n{'='*80}")
-        print(f"📊 DUAL-MODE MERGE SUMMARY")
-        print(f"{'='*80}")
-
-        print(f"\nPairs processed: {total_pairs}")
-        print(f"Total documents merged: {len(merged_para) + len(merged_full)}")
-
-        print(f"\n📝 PARAGRAPH MODE: {len(merged_para)} documents")
-        if merged_para:
-            for doc in merged_para:
-                merge_count = len(doc.get('merged_topics', []))
-                print(f"   • {doc['title']} ({len(doc['content'])} chars, {merge_count} topics)")
-
-        print(f"\n📄 FULL-DOC MODE: {len(merged_full)} documents")
-        if merged_full:
-            for doc in merged_full:
-                merge_count = len(doc.get('merged_topics', []))
-                print(f"   • {doc['title']} ({len(doc['content'])} chars, {merge_count} topics)")
-
-        if failed:
-            print(f"\n❌ FAILED: {len(failed)}")
-            for pair in failed:
-                print(f"   • {pair}")
-
-        print(f"\n{'='*80}")
-
-    def save_merged_documents(self, results: Dict, output_dir: str = "merged_documents", save_to_db: bool = True, db_path: str = "documents.db"):
         """
-        Save merged documents to files and update in vector database
+        Save merged documents to files and database
+
+        Database will handle atomic transaction for chunk replacement
 
         Args:
-            results: Results from merge_documents_batch or merge_documents_both_modes
-            output_dir: Output directory for markdown files
-            save_to_db: Whether to update in vector database
-            db_path: Path to database file
+            results: Results from merge_documents_batch
+            output_dir: Output directory for files
+            save_to_db: Whether to save to database
         """
-        import json
         from pathlib import Path
+        import json
+
+        merged_docs = results.get('merged_documents', [])
+
+        if not merged_docs:
+            print("⚠️  No merged documents to save")
+            return
 
         # Create output directory
-        Path(output_dir).mkdir(parents=True, exist_ok=True)
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
 
-        # Determine what type of results we have
-        if "merged_paragraph" in results:
-            # Both modes
-            all_docs = results["merged_paragraph"] + results["merged_fulldoc"]
-        else:
-            # Single mode
-            all_docs = results["merged_documents"]
+        # Save each document to file
+        for doc in merged_docs:
+            filename = f"{doc['id']}_merged_{datetime.now().strftime('%Y%m%d')}.json"
+            filepath = output_path / filename
 
-        # Apply hybrid chunking and update in database if enabled
+            # Save document (without embeddings - too large)
+            doc_for_file = {
+                'id': doc['id'],
+                'title': doc['title'],
+                'content': doc['content'],
+                'summary': doc['summary'],
+                'category': doc['category'],
+                'keywords': doc['keywords'],
+                'source_urls': doc['source_urls'],
+                'updated_at': doc['updated_at'],
+                'chunks_count': len(doc.get('chunks', [])),
+                'merge_history': doc.get('merge_history', {})
+            }
+
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(doc_for_file, f, indent=2)
+
+        print(f"\n💾 Saved {len(merged_docs)} merged documents to {output_dir}/")
+
+        # Save to database if enabled
         if save_to_db:
-            print(f"\n💾 Applying chunking and updating {len(all_docs)} documents...")
             try:
-                # Check if using PostgreSQL
-                use_postgresql = os.getenv('USE_POSTGRESQL', 'true').lower() == 'true'
-
-                if use_postgresql:
+                if os.getenv('USE_POSTGRESQL', 'true').lower() == 'true':
                     from chunked_document_database import ChunkedDocumentDatabase
+
                     db = ChunkedDocumentDatabase()
-                else:
-                    print("  ⚠️  Chunking only supported with PostgreSQL")
-                    from document_database import DocumentDatabase
-                    db = DocumentDatabase(db_path=db_path)
 
-                success_count = 0
-                for doc in all_docs:
-                    print(f"\n  🔪 Applying chunking to merged: {doc['title']} ({doc['mode']})")
+                    print(f"\n💾 Updating database with merged documents...")
+                    print(f"   Each update will:")
+                    print(f"   1. Update document content")
+                    print(f"   2. DELETE old chunks")
+                    print(f"   3. INSERT new chunks")
+                    print(f"   4. Record merge history")
+                    print(f"   (Atomic transactions ensure consistency)")
 
-                    # Apply hybrid chunking
-                    try:
-                        chunked = self.chunker.chunk_document(
-                            content=doc['content'],
-                            document_id=doc['id'],
-                            title=doc['title'],
-                            mode=doc.get('mode', 'full-doc')
-                        )
+                    # Database has update_document_with_chunks() method that handles:
+                    # BEGIN TRANSACTION
+                    #   UPDATE documents SET ...
+                    #   DELETE FROM chunks WHERE document_id = ...
+                    #   INSERT INTO chunks ...
+                    #   INSERT INTO merge_history ...
+                    # COMMIT
 
-                        # Add chunks to document
-                        doc['chunks'] = chunked
-
-                        # Summary from chunks
-                        if 'document_summary' in chunked:
-                            doc['summary'] = chunked['document_summary']
-
-                        print(f"     ✅ Chunked: {len(chunked.get('sections', []))} sections, " +
-                              f"{sum(len(s.get('propositions', [])) for s in chunked.get('sections', []))} propositions")
-
-                    except Exception as e:
-                        print(f"     ⚠️  Chunking failed: {e}")
-                        doc['chunks'] = None
-
-                    # Save to database with chunks
-                    if use_postgresql and doc.get('chunks'):
-                        # Use insert_document which handles ON CONFLICT DO UPDATE
+                    saved_count = 0
+                    for doc in merged_docs:
                         try:
-                            result = db.insert_document(doc)
-                            if result:
-                                print(f"  ✅ Document updated with chunks: {doc['id']}")
-                                success_count += 1
+                            success = db.update_document_with_chunks(doc)
+                            if success:
+                                saved_count += 1
                         except Exception as e:
-                            print(f"  ❌ Failed to update {doc['id']}: {e}")
-                    else:
-                        # Fallback: update without chunks (old database)
-                        if hasattr(db, 'update_document'):
-                            if db.update_document(doc):
-                                success_count += 1
+                            print(f"  ⚠️  Failed to save {doc['id']}: {e}")
 
-                print(f"\n  ✅ Updated {success_count}/{len(all_docs)} documents in database")
+                    print(f"  ✅ Updated {saved_count}/{len(merged_docs)} documents in database")
 
-                # Print statistics
-                if use_postgresql:
-                    try:
-                        stats = db.get_document_stats()
-                        print(f"\n  📊 Database Statistics:")
-                        print(f"     Total documents: {stats.get('documents', 0)}")
-                        print(f"     Total sections: {stats.get('sections', 0)}")
-                        print(f"     Total propositions: {stats.get('propositions', 0)}")
-                    except:
-                        pass
+                else:
+                    print("⚠️  Database save skipped (PostgreSQL not enabled)")
 
             except Exception as e:
-                print(f"  ❌ Database update error: {e}")
+                print(f"⚠️  Database save failed: {e}")
                 import traceback
                 traceback.print_exc()
 
-        # Save each document as markdown
-        for doc in all_docs:
-            # Create safe filename
-            safe_title = "".join(c if c.isalnum() or c in (' ', '-', '_') else '_'
-                                for c in doc['title'])
-            safe_title = safe_title.replace(' ', '_').lower()
 
-            filename = f"{safe_title}_{doc['mode']}_merged.md"
-            filepath = Path(output_dir) / filename
-
-            # Write document
-            with open(filepath, 'w', encoding='utf-8') as f:
-                f.write(f"# {doc['title']}\n\n")
-                f.write(f"**Category**: {doc['category']}\n")
-                f.write(f"**Mode**: {doc['mode']}\n")
-                f.write(f"**Created**: {doc.get('created_at', 'N/A')}\n")
-                f.write(f"**Updated**: {doc.get('updated_at', 'N/A')}\n")
-
-                # List merged topics
-                if 'merged_topics' in doc and doc['merged_topics']:
-                    f.write(f"**Merged Topics**: {len(doc['merged_topics'])}\n")
-                    for mt in doc['merged_topics']:
-                        f.write(f"  - {mt['title']} (merged: {mt['merged_at']})\n")
-
-                f.write("\n---\n\n")
-                f.write(doc['content'])
-                f.write("\n")
-
-        # Save summary as JSON
-        summary_file = Path(output_dir) / "merge_summary.json"
-        with open(summary_file, 'w', encoding='utf-8') as f:
-            json.dump(results, f, indent=2, ensure_ascii=False)
-
-        print(f"\n📁 Markdown files saved to: {output_dir}/")
-        print(f"   Files: {len(all_docs)}")
-        print(f"   Summary: merge_summary.json")
-
-
-# Example usage and testing
-async def main():
-    """Test document merger with isolated examples"""
-    print("="*80)
-    print("🔀 Document Merger Test (Isolated)")
-    print("="*80)
-
-    # Initialize merger
-    try:
-        merger = DocumentMerger()
-    except ValueError as e:
-        print(f"\n❌ Error: {e}")
-        return
-
-    # Example existing documents
-    existing_para_doc = {
-        "title": "Python Bug Reporting",
-        "category": "guide",
-        "mode": "paragraph",
-        "content": "To report bugs in Python, use the GitHub issues tracker at https://github.com/python/cpython/issues. Search existing issues first to avoid duplicates. When creating a new issue, provide a clear title under 10 words and a detailed description including expected vs actual behavior.",
-        "created_at": "2025-10-20T10:00:00"
-    }
-
-    existing_full_doc = {
-        "title": "Python Bug Reporting",
-        "category": "guide",
-        "mode": "full-doc",
-        "content": """## Overview
-
-The Python bug reporting system uses GitHub Issues for tracking bugs and feature requests.
-
-## Before Reporting
-
-1. Search the existing issues
-2. Check if it's already been reported
-3. Gather all relevant information
-
-## How to Report
-
-Visit https://github.com/python/cpython/issues and click "New Issue". Provide:
-- Clear title (under 10 words)
-- Detailed description
-- Steps to reproduce
-- Expected vs actual behavior
-""",
-        "created_at": "2025-10-20T10:00:00"
-    }
-
-    # Example new topic to merge
-    new_topic = {
-        "title": "Reporting Python Bugs - Additional Info",
-        "category": "guide",
-        "summary": "Additional information about the Python bug reporting process, including platform details and extension modules.",
-        "description": "When reporting bugs, always include your platform details: Python version (use python --version), Operating System (name and version), and hardware architecture. If using extension modules, list their names and versions. Anonymous reports are not allowed - you must have a GitHub account. After submitting, you'll receive updates on your report as developers review it."
-    }
-
-    # Test 1: Merge paragraph document
-    print("\n" + "="*80)
-    print("TEST 1: MERGE PARAGRAPH DOCUMENT")
-    print("="*80)
-
-    merge_pairs_para = [{
-        'topic': new_topic,
-        'existing_document': existing_para_doc
-    }]
-
-    para_results = merger.merge_documents_batch(merge_pairs_para, mode="paragraph")
-
-    # Test 2: Merge full document
-    print("\n" + "="*80)
-    print("TEST 2: MERGE FULL DOCUMENT")
-    print("="*80)
-
-    merge_pairs_full = [{
-        'topic': new_topic,
-        'existing_document': existing_full_doc
-    }]
-
-    full_results = merger.merge_documents_batch(merge_pairs_full, mode="full-doc")
-
-    # Test 3: Merge both modes
-    print("\n" + "="*80)
-    print("TEST 3: MERGE BOTH MODES")
-    print("="*80)
-
-    merge_pairs_both = [{
-        'topic': new_topic,
-        'para_document': existing_para_doc,
-        'fulldoc_document': existing_full_doc
-    }]
-
-    both_results = merger.merge_documents_both_modes(merge_pairs_both)
-
-    # Save merged documents
-    merger.save_merged_documents(both_results, output_dir="test_merged_documents")
-
-    # Show before/after comparison
-    print("\n" + "="*80)
-    print("📊 BEFORE/AFTER COMPARISON")
-    print("="*80)
-
-    if both_results['merged_paragraph']:
-        print("\n📝 PARAGRAPH MODE:")
-        print(f"   BEFORE: {len(existing_para_doc['content'])} chars")
-        print(f"   AFTER:  {len(both_results['merged_paragraph'][0]['content'])} chars")
-        print(f"   CHANGE: +{len(both_results['merged_paragraph'][0]['content']) - len(existing_para_doc['content'])} chars")
-
-    if both_results['merged_fulldoc']:
-        print("\n📄 FULL-DOC MODE:")
-        print(f"   BEFORE: {len(existing_full_doc['content'])} chars")
-        print(f"   AFTER:  {len(both_results['merged_fulldoc'][0]['content'])} chars")
-        print(f"   CHANGE: +{len(both_results['merged_fulldoc'][0]['content']) - len(existing_full_doc['content'])} chars")
-
-
+# Example usage
 if __name__ == "__main__":
-    import asyncio
-    asyncio.run(main())
+    merger = DocumentMerger()
+
+    # Test merge
+    test_topic = {
+        'title': 'Python List Methods',
+        'content': 'Additional list methods include sort(), reverse(), and clear().',
+        'keywords': ['python', 'list', 'methods'],
+        'source_url': 'https://example.com/python-list-methods'
+    }
+
+    existing_doc = {
+        'id': 'python_lists_20250101',
+        'title': 'Python Lists',
+        'content': 'Lists in Python are mutable sequences. Common operations include append(), extend(), and remove().',
+        'summary': 'Introduction to Python lists',
+        'category': 'tutorial',
+        'keywords': ['python', 'list'],
+        'source_urls': ['https://example.com/python-lists'],
+        'created_at': '2025-01-01T00:00:00'
+    }
+
+    result = merger.merge_documents_batch([{
+        'topic': test_topic,
+        'existing_document': existing_doc
+    }])
+
+    print(f"\n{'='*80}")
+    print(f"Merge test complete: {result['success_count']} successful")
+    print(f"{'='*80}")

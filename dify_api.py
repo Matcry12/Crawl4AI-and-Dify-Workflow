@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """
-Dify External Knowledge API Wrapper
+Dify External Knowledge API Wrapper - Simplified Version
 Provides a REST API endpoint compatible with Dify.ai's External Knowledge API specification.
+
+Updated to work with simplified 3-table schema (documents, chunks, merge_history).
+Uses Parent Document Retrieval: searches chunks, returns full documents.
 """
 
 import os
@@ -22,7 +25,7 @@ load_dotenv()
 # Configuration
 API_KEY = os.getenv('DIFY_API_KEY', 'your-secret-api-key-here')
 KNOWLEDGE_ID = os.getenv('KNOWLEDGE_ID', 'crawl4ai-rag-kb')
-DEFAULT_SEARCH_LEVEL = os.getenv('SEARCH_LEVEL', 'section')  # document, section, or proposition
+RETURN_MODE = os.getenv('RETURN_MODE', 'document')  # document or chunk
 PORT = int(os.getenv('DIFY_API_PORT', 5000))
 
 # Initialize Flask app
@@ -37,144 +40,135 @@ searcher = EmbeddingSearcher(
 )
 
 print("=" * 80)
-print("🚀 Dify External Knowledge API Server")
+print("🚀 Dify External Knowledge API Server - Simplified Version")
 print("=" * 80)
 print(f"Knowledge ID: {KNOWLEDGE_ID}")
-print(f"Search Level: {DEFAULT_SEARCH_LEVEL}")
+print(f"Return Mode: {RETURN_MODE} (document: full docs, chunk: individual chunks)")
 print(f"Port: {PORT}")
 print(f"API Key configured: {'✅' if API_KEY and API_KEY != 'your-secret-api-key-here' else '❌'}")
+print(f"Database: PostgreSQL with pgvector (Parent Document Retrieval)")
 print("=" * 80)
 print()
 
 
-def verify_api_key(auth_header: Optional[str]) -> tuple[bool, Optional[str]]:
+def verify_api_key(auth_header: Optional[str]) -> tuple[bool, Optional[str], int]:
     """
     Verify the API key from Authorization header.
 
     Returns:
-        (is_valid, error_message)
+        (is_valid, error_message, error_code)
     """
     if not auth_header:
-        return False, "Missing Authorization header"
+        return False, "Missing Authorization header", 1001
 
     # Expected format: "Bearer <api-key>"
     parts = auth_header.split(' ')
     if len(parts) != 2 or parts[0] != 'Bearer':
-        return False, "Invalid Authorization header format. Expected 'Bearer <api-key>'"
+        return False, "Invalid Authorization header format. Expected 'Bearer <api-key>'", 1001
 
     api_key = parts[1]
     if api_key != API_KEY:
-        return False, "Invalid API key"
+        return False, "Invalid API key", 1002
 
-    return True, None
+    return True, None, None
 
 
 def search_knowledge(
     query: str,
     top_k: int = 5,
     score_threshold: float = 0.0,
-    search_level: str = None,
-    mode_filter: str = None
+    return_mode: str = None
 ) -> List[Dict]:
     """
-    Search the knowledge base using RAG system.
+    Search the knowledge base using Parent Document Retrieval.
+
+    Searches chunks for precision, returns full documents for completeness.
 
     Args:
         query: User's question
         top_k: Number of results to return
         score_threshold: Minimum similarity score (0-1)
-        search_level: Level to search (document/section/proposition)
-        mode_filter: Filter by mode (paragraph/full-doc)
+        return_mode: What to return - 'document' (full docs) or 'chunk' (individual chunks)
 
     Returns:
         List of records with content, score, title, and metadata
     """
     # Use configured default if not specified
-    if not search_level:
-        search_level = DEFAULT_SEARCH_LEVEL
+    if not return_mode:
+        return_mode = RETURN_MODE
 
     # Generate embedding for query
     query_embedding = searcher.create_embedding(query)
     if not query_embedding:
         return []
 
-    # Search using appropriate level
-    if search_level == "section":
-        results = db.search_similar_sections(
-            query_embedding=query_embedding,
-            mode=mode_filter,
-            limit=top_k,
-            min_similarity=score_threshold
-        )
-    elif search_level == "proposition":
-        results = db.search_similar_propositions(
-            query_embedding=query_embedding,
-            mode=mode_filter,
-            limit=top_k,
-            min_similarity=score_threshold
-        )
-    else:  # document
-        results = db.search_similar_documents(
-            query_embedding=query_embedding,
-            mode=mode_filter,
-            limit=top_k,
-            min_similarity=score_threshold
-        )
+    # Search using Parent Document Retrieval
+    # This searches chunks but returns full parent documents
+    results = db.search_parent_documents(
+        query_embedding=query_embedding,
+        top_k=top_k,
+        similarity_threshold=score_threshold
+    )
 
     # Convert to Dify format
     records = []
-    for result in results:
-        # Build metadata
-        metadata = {}
 
-        if search_level == "section":
-            metadata = {
-                "document_id": result.get('document_id', ''),
-                "document_title": result.get('document_title', ''),
-                "document_mode": result.get('document_mode', ''),
-                "section_index": result.get('section_index', 0),
-                "section_id": result.get('id', ''),
-                "keywords": result.get('keywords', ''),
-                "topics": result.get('topics', ''),
-                "section_type": result.get('section_type', ''),
-                "chunk_type": "section"
-            }
-            title = f"{result.get('document_title', 'Unknown')} - Section {result.get('section_index', 0)}"
-            content = result.get('content', '')
+    if return_mode == "chunk":
+        # Return individual chunks from matching documents
+        for result in results:
+            doc_id = result.get('id', '')
+            doc_title = result.get('title', 'Untitled')
+            keywords = result.get('keywords', [])
+            source_urls = result.get('source_urls', [])
+            doc_score = result.get('score', 0.0)
+            matching_chunks = result.get('matching_chunks', 0)
 
-        elif search_level == "proposition":
-            metadata = {
-                "document_id": result.get('document_id', ''),
-                "document_title": result.get('document_title', ''),
-                "document_mode": result.get('document_mode', ''),
-                "section_id": result.get('section_id', ''),
-                "section_index": result.get('section_index', 0),
-                "proposition_index": result.get('proposition_index', 0),
-                "proposition_type": result.get('proposition_type', ''),
-                "entities": result.get('entities', ''),
-                "keywords": result.get('keywords', ''),
-                "chunk_type": "proposition"
-            }
-            title = f"{result.get('document_title', 'Unknown')} - Proposition {result.get('proposition_index', 0)}"
-            content = result.get('content', '')
+            # Return each chunk as a separate record
+            for i, chunk in enumerate(result.get('chunks', [])):
+                metadata = {
+                    "document_id": doc_id,
+                    "document_title": doc_title,
+                    "chunk_id": chunk.get('id', ''),
+                    "chunk_index": chunk.get('chunk_index', 0),
+                    "chunk_token_count": chunk.get('token_count', 0),
+                    "keywords": keywords,
+                    "source_urls": source_urls,
+                    "matching_chunks_in_doc": matching_chunks,
+                    "return_type": "chunk"
+                }
 
-        else:  # document
+                records.append({
+                    "content": chunk.get('content', ''),
+                    "score": doc_score,  # Document-level score
+                    "title": f"{doc_title} - Chunk {chunk.get('chunk_index', 0) + 1}",
+                    "metadata": metadata
+                })
+
+    else:  # return_mode == "document"
+        # Return full documents (default for Parent Document Retrieval)
+        # Strategy: Search chunks for precision, return full documents for context
+        for result in results:
             metadata = {
                 "document_id": result.get('id', ''),
-                "category": result.get('category', ''),
-                "mode": result.get('mode', ''),
-                "chunk_type": "document"
+                "keywords": result.get('keywords', []),
+                "source_urls": result.get('source_urls', []),
+                "num_chunks": len(result.get('chunks', [])),
+                "matching_chunks": result.get('matching_chunks', 0),
+                "return_type": "document"
             }
-            title = result.get('title', 'Untitled')
-            # For documents, use summary as primary content, full content as fallback
-            content = result.get('summary', '') or result.get('content', '')
 
-        records.append({
-            "content": content,
-            "score": result.get('similarity', 0.0),
-            "title": title,
-            "metadata": metadata
-        })
+            # Return FULL document content (not just summary) for LLM context
+            # This is the essence of Parent Document Retrieval:
+            # - Search small chunks for precision
+            # - Return full documents for complete context
+            content = result.get('content', '') or result.get('summary', '')
+
+            records.append({
+                "content": content,
+                "score": result.get('score', 0.0),
+                "title": result.get('title', 'Untitled'),
+                "metadata": metadata
+            })
 
     return records
 
@@ -189,11 +183,11 @@ def retrieval():
     """
     # Verify authentication
     auth_header = request.headers.get('Authorization')
-    is_valid, error_msg = verify_api_key(auth_header)
+    is_valid, error_msg, error_code = verify_api_key(auth_header)
 
     if not is_valid:
         return jsonify({
-            "error_code": 1001 if "format" in error_msg else 1002,
+            "error_code": error_code,
             "error_msg": error_msg
         }), 403
 
@@ -234,8 +228,7 @@ def retrieval():
     score_threshold = retrieval_setting.get('score_threshold', 0.0)
 
     # Optional: Extract custom settings (non-standard Dify fields)
-    search_level = data.get('search_level', DEFAULT_SEARCH_LEVEL)
-    mode_filter = data.get('mode_filter')  # paragraph or full-doc
+    return_mode = data.get('return_mode', RETURN_MODE)  # document or chunk
 
     # Search knowledge base
     try:
@@ -243,11 +236,11 @@ def retrieval():
             query=query,
             top_k=top_k,
             score_threshold=score_threshold,
-            search_level=search_level,
-            mode_filter=mode_filter
+            return_mode=return_mode
         )
 
         print(f"📝 Query: {query[:50]}...")
+        print(f"   Mode: {return_mode}")
         print(f"   Found {len(records)} results (top_k={top_k}, threshold={score_threshold})")
         if records:
             print(f"   Top score: {records[0]['score']:.4f}")
@@ -274,7 +267,8 @@ def health():
     return jsonify({
         "status": "healthy",
         "knowledge_id": KNOWLEDGE_ID,
-        "search_level": DEFAULT_SEARCH_LEVEL
+        "return_mode": RETURN_MODE,
+        "retrieval_strategy": "Parent Document Retrieval"
     }), 200
 
 
@@ -283,28 +277,34 @@ def info():
     """API information endpoint."""
     # Check if API key is in header for protected info
     auth_header = request.headers.get('Authorization')
-    is_valid, _ = verify_api_key(auth_header)
+    is_valid, _, _ = verify_api_key(auth_header)
 
     # Count available data
     try:
         doc_count = len(db.get_all_documents_with_embeddings())
+        stats = db.get_stats()
+        chunk_count = stats.get('total_chunks', 0)
     except:
         doc_count = "unknown"
+        chunk_count = "unknown"
 
     info_data = {
-        "api_version": "1.0.0",
+        "api_version": "2.0.0",  # Updated version
         "knowledge_id": KNOWLEDGE_ID,
-        "default_search_level": DEFAULT_SEARCH_LEVEL,
-        "supported_search_levels": ["document", "section", "proposition"],
-        "supported_modes": ["paragraph", "full-doc"],
+        "default_return_mode": RETURN_MODE,
+        "supported_return_modes": ["document", "chunk"],
+        "retrieval_strategy": "Parent Document Retrieval (search chunks, return docs)",
+        "schema": "Simplified 3-table (documents, chunks, merge_history)",
         "endpoint": "/retrieval"
     }
 
     # Add detailed stats only if authenticated
     if is_valid:
         info_data["documents"] = doc_count
+        info_data["chunks"] = chunk_count
         info_data["database"] = "PostgreSQL with pgvector"
-        info_data["index_type"] = "HNSW"
+        info_data["index_type"] = "HNSW (ivfflat for chunks)"
+        info_data["embedding_model"] = "text-embedding-004 (768-dim)"
 
     return jsonify(info_data), 200
 

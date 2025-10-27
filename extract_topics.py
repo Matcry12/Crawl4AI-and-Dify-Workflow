@@ -48,8 +48,50 @@ class TopicExtractor:
         # Rate limiter
         self.llm_limiter = get_llm_rate_limiter()
 
+        # Non-content URL patterns to skip
+        self.skip_url_patterns = [
+            'opensearch.xml',
+            'robots.txt',
+            'sitemap.xml',
+            'manifest.json',
+            '.js',
+            '.css',
+            '.png',
+            '.jpg',
+            '.jpeg',
+            '.gif',
+            '.svg',
+            '.ico',
+            '.woff',
+            '.woff2',
+            '.ttf',
+            '.eot',
+            '/search',
+            '/search/',
+            '/api/',
+            '/_next/',
+            '/assets/js/',
+            '/static/js/',
+        ]
+
         print("✅ Topic extractor initialized")
         print(f"   Model: {self.model_name}")
+
+    def should_skip_url(self, url: str) -> tuple[bool, str]:
+        """
+        Check if URL should be skipped (non-content files)
+
+        Args:
+            url: URL to check
+
+        Returns:
+            (should_skip, reason) tuple
+        """
+        url_lower = url.lower()
+        for pattern in self.skip_url_patterns:
+            if pattern in url_lower:
+                return True, f"Non-content URL pattern: {pattern}"
+        return False, ""
 
     def create_extraction_prompt(self, markdown_content: str, url: str) -> str:
         """
@@ -112,18 +154,25 @@ CRITICAL QUALITY REQUIREMENTS:
    - If two topics seem similar, combine them into ONE comprehensive topic
 
 3. **Quality Standards**:
-   - Extract 2-4 topics ONLY (prefer quality over quantity)
+   - Extract 2-3 topics ONLY (fewer topics = more detail per topic)
    - Each topic must be SUBSTANTIAL (not trivial)
    - Title: Clear, specific, descriptive (5-8 words)
    - Category: One word - tutorial, guide, reference, concept, documentation, api, troubleshooting
    - Summary: 2-3 sentences explaining WHAT this topic covers and WHY it matters (150-250 chars)
-   - Description: Key details and context (300-800 chars - be concise!)
+   - Content: DETAILED, COMPREHENSIVE content (800-1500 chars - rich but focused)
 
-4. **Description Requirements**:
-   - Focus on KEY information: concepts, syntax, common patterns
-   - Include 1-2 code examples if relevant (keep them SHORT)
-   - Mention important warnings or gotchas
-   - BE CONCISE - descriptions should be 300-800 characters, NOT pages of text
+4. **Content Requirements** (CRITICAL - This is for quality RAG chunking):
+   - Extract DETAILED content with depth - NOT summaries!
+   - Target length: 800-1500 characters (minimum 700 chars)
+   - Include comprehensive information from the source:
+     * Full explanations of concepts with context
+     * Code examples with explanations (include complete examples)
+     * Step-by-step instructions with details
+     * Important warnings, best practices, gotchas
+     * Key technical details, parameters, common use cases
+   - Think of this as extracting a DETAILED EXPLANATION, not a brief overview
+   - Balance: More detail than a summary, but focus on most important points
+   - Quality over quantity: 1200 chars of valuable content beats 3000 chars of filler
 
 5. **Output Format**:
 [
@@ -131,9 +180,19 @@ CRITICAL QUALITY REQUIREMENTS:
     "title": "Specific Descriptive Topic Title",
     "category": "category",
     "summary": "Clear summary explaining what this topic covers and why it's useful...",
-    "description": "COMPREHENSIVE content with ALL details, examples, code snippets, explanations, warnings, best practices, and step-by-step instructions..."
+    "keywords": ["keyword1", "keyword2", "keyword3", "keyword4", "keyword5"],
+    "content": "DETAILED COMPREHENSIVE CONTENT extracted from the source (800-1500 chars). Include: complete explanations with context and technical details, key code examples with explanations, step-by-step instructions with rationale, important warnings/gotchas/best practices, essential parameter descriptions and usage patterns, examples showing common use cases. Focus on depth and usefulness - extract the DETAILED explanation from the source!"
   }}
 ]
+
+CRITICAL REMINDER: The 'content' field should contain 800-1500 characters of DETAILED, COMPREHENSIVE content. Not a brief summary, but a rich, detailed explanation with examples and technical depth. This content will be chunked for RAG retrieval, so include all important details!
+
+6. **Keywords Requirement**:
+   - Extract 5-10 highly relevant keywords for each topic
+   - Keywords should be specific technical terms, concepts, or important phrases
+   - Include both broad categories and specific details
+   - Use lowercase, singular form when possible
+   - Examples: ["python", "if-statement", "conditional", "syntax", "boolean"]
 
 EXAMPLES OF GOOD vs BAD TOPICS:
 
@@ -146,9 +205,48 @@ EXAMPLES OF GOOD vs BAD TOPICS:
 ❌ BAD: Two topics: "Python Lists Basics" and "Python Lists Operations" - should be ONE topic
 ✅ GOOD: One topic: "Python Lists - Creation, Indexing, and Operations"
 
-Return ONLY the JSON array with 2-4 HIGH-QUALITY, DISTINCT topics:"""
+**CRITICAL OUTPUT RULES**:
+1. If the page contains 2-4 extractable topics: Return JSON array with those topics
+2. If the page contains NO extractable topics (e.g., navigation pages, XML files, meta-information): Return empty array: []
+3. NEVER return explanatory text - ONLY return valid JSON
+4. ALWAYS return a JSON array, even if empty
+
+Return ONLY the JSON array with 2-4 HIGH-QUALITY, DISTINCT topics, or [] if no topics can be extracted:"""
 
         return prompt
+
+    def _repair_incomplete_json(self, json_text: str) -> str:
+        """
+        Attempt to repair incomplete JSON by closing unclosed arrays and objects
+
+        Args:
+            json_text: Potentially incomplete JSON text
+
+        Returns:
+            Repaired JSON text
+        """
+        # Count unclosed brackets
+        open_braces = json_text.count('{')
+        close_braces = json_text.count('}')
+        open_brackets = json_text.count('[')
+        close_brackets = json_text.count(']')
+        open_quotes = json_text.count('"') - json_text.count('\\"')
+
+        # Close unclosed strings
+        if open_quotes % 2 != 0:
+            json_text += '"'
+
+        # Close unclosed arrays
+        while open_brackets > close_brackets:
+            json_text += ']'
+            close_brackets += 1
+
+        # Close unclosed objects
+        while open_braces > close_braces:
+            json_text += '}'
+            close_braces += 1
+
+        return json_text
 
     def validate_topic_quality(self, topic: dict) -> tuple[bool, str]:
         """
@@ -162,7 +260,8 @@ Return ONLY the JSON array with 2-4 HIGH-QUALITY, DISTINCT topics:"""
         """
         title = topic.get('title', '').lower()
         summary = topic.get('summary', '')
-        description = topic.get('description', '')
+        # Support both 'content' (new) and 'description' (old) for backwards compatibility
+        content = topic.get('content', topic.get('description', ''))
 
         # List of non-substantive keywords that indicate low-quality topics
         non_substantive_keywords = [
@@ -191,11 +290,17 @@ Return ONLY the JSON array with 2-4 HIGH-QUALITY, DISTINCT topics:"""
                 return False, f"Non-substantive topic: contains '{keyword}'"
 
         # Check minimum content length
-        if len(description) < 100:
-            return False, "Description too short (< 100 chars)"
+        # Note: We prefer 1200+ chars for optimal chunking, but accept 500+ to be flexible
+        if len(content) < 500:
+            return False, f"Content too short ({len(content)} chars, minimum 500 chars required for quality chunking)"
 
         if len(summary) < 30:
             return False, "Summary too short (< 30 chars)"
+
+        # Check keywords exist (for new format)
+        keywords = topic.get('keywords', [])
+        if keywords and (not isinstance(keywords, list) or len(keywords) < 3):
+            return False, "Keywords must be a list with at least 3 items"
 
         # Check for vague/generic titles without specific content
         vague_only_titles = ['introduction', 'overview', 'about', 'general']
@@ -336,16 +441,22 @@ Return ONLY the JSON array with 2-4 HIGH-QUALITY, DISTINCT topics:"""
         else:
             merged_summary = f"{summary1} {summary2}".strip()
 
-        # Combine descriptions (keep all unique information)
-        desc1 = topic1.get('description', '')
-        desc2 = topic2.get('description', '')
+        # Combine content/description (keep all unique information)
+        # Support both 'content' (new) and 'description' (old)
+        content1 = topic1.get('content', topic1.get('description', ''))
+        content2 = topic2.get('content', topic2.get('description', ''))
 
-        # Simple merge: combine both descriptions with a separator
+        # Simple merge: combine both contents with a separator
         # The LLM will handle the combined content later
-        if desc1 and desc2:
-            merged_description = f"{desc1}\n\n{desc2}"
+        if content1 and content2:
+            merged_content = f"{content1}\n\n{content2}"
         else:
-            merged_description = desc1 or desc2
+            merged_content = content1 or content2
+
+        # Merge keywords (combine and deduplicate)
+        keywords1 = set(topic1.get('keywords', []))
+        keywords2 = set(topic2.get('keywords', []))
+        merged_keywords = list(keywords1 | keywords2)
 
         # Use the first topic's category (or the more specific one)
         merged_category = topic1.get('category', topic2.get('category', 'general'))
@@ -354,7 +465,10 @@ Return ONLY the JSON array with 2-4 HIGH-QUALITY, DISTINCT topics:"""
             'title': merged_title,
             'category': merged_category,
             'summary': merged_summary,
-            'description': merged_description
+            'keywords': merged_keywords,
+            'content': merged_content,
+            # Keep description for backwards compatibility
+            'description': merged_content
         }
 
     def deduplicate_topics(self, topics: list) -> list:
@@ -446,9 +560,25 @@ Return ONLY the JSON array with 2-4 HIGH-QUALITY, DISTINCT topics:"""
 
             if start_idx != -1 and end_idx != -1:
                 response_text = response_text[start_idx:end_idx+1]
+            else:
+                # No JSON array found - LLM returned text instead
+                print(f"  ⚠️  No JSON array found in response (likely no extractable topics)")
+                print(f"  Response preview: {response_text[:200]}")
+                return []
 
-            # Parse JSON
-            topics = json.loads(response_text)
+            # Try to parse JSON, with repair attempt if it fails
+            try:
+                topics = json.loads(response_text)
+            except json.JSONDecodeError as e:
+                # Try to repair incomplete JSON
+                print(f"  ⚠️  Attempting to repair incomplete JSON...")
+                try:
+                    repaired = self._repair_incomplete_json(response_text)
+                    topics = json.loads(repaired)
+                except json.JSONDecodeError:
+                    # Repair failed, treat as no topics
+                    print(f"  ⚠️  JSON repair failed, treating as no topics")
+                    return []
 
             # Validate topics structure
             if not isinstance(topics, list):
@@ -497,14 +627,13 @@ Return ONLY the JSON array with 2-4 HIGH-QUALITY, DISTINCT topics:"""
                 raise ValueError(f"No valid topics found in response ({rejected_count} topics rejected for quality issues)")
 
         except json.JSONDecodeError as e:
-            print(f"  ❌ JSON parse error: {e}")
+            # This should rarely happen now with improved handling above
+            print(f"  ❌ JSON parse error (unexpected): {e}")
             print(f"  Response was: {response_text[:500] if 'response_text' in locals() else 'No response'}")
 
-            # Retry once with smaller content
-            if retry_count == 0:
-                print(f"  🔄 Retrying with smaller content...")
-                return await self.extract_topics_from_text(markdown_content[:3000], url, retry_count=1)
-
+            # For unexpected JSON errors, just return empty
+            # (most cases are already handled gracefully above)
+            print(f"  ⚠️  Treating as no extractable topics")
             return []
         except Exception as e:
             print(f"  ❌ Error: {e}")
@@ -564,6 +693,12 @@ Return ONLY the JSON array with 2-4 HIGH-QUALITY, DISTINCT topics:"""
         # Process each successfully crawled URL
         for i, url in enumerate(successful_urls, 1):
             print(f"\n[{i}/{len(successful_urls)}] Processing: {url}")
+
+            # Check if this URL should be skipped (non-content files)
+            should_skip, skip_reason = self.should_skip_url(url)
+            if should_skip:
+                print(f"  ⏭️  Skipping: {skip_reason}")
+                continue
 
             # Get the crawl data for this URL
             url_data = crawl_data.get('crawl_data', {}).get(url, {})
@@ -686,9 +821,15 @@ Return ONLY the JSON array with 2-4 HIGH-QUALITY, DISTINCT topics:"""
                 lines.append(f"**Category**: {topic.get('category', 'general')}")
                 lines.append(f"**Summary**: {topic.get('summary', 'No summary')}")
 
-                # Add description if available
-                if 'description' in topic and topic['description']:
-                    lines.append(f"**Description**: {topic.get('description', '')}")
+                # Add keywords if available
+                keywords = topic.get('keywords', [])
+                if keywords:
+                    lines.append(f"**Keywords**: {', '.join(keywords)}")
+
+                # Add content/description if available (support both fields)
+                content = topic.get('content', topic.get('description', ''))
+                if content:
+                    lines.append(f"**Content**: {content[:500]}{'...' if len(content) > 500 else ''}")
 
             lines.append("\n" + "=" * 80)
 
