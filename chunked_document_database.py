@@ -614,10 +614,10 @@ class SimpleDocumentDatabase:
 
     def get_all_documents_with_embeddings(self) -> List[Dict]:
         """
-        Get all documents with basic info (for merge decisions and UI list view)
+        Get all documents with embeddings (for merge decisions)
 
         Returns:
-            List of documents with id, title, summary, keywords, category, chunk_count, content_length
+            List of documents with id, title, summary, keywords, category, embedding, chunk_count, content_length
         """
         try:
             query = """
@@ -628,40 +628,44 @@ class SimpleDocumentDatabase:
                     d.category,
                     d.keywords,
                     d.source_urls,
+                    d.embedding,
                     LENGTH(d.content) as content_length,
                     COUNT(c.id) as chunk_count
                 FROM documents d
                 LEFT JOIN chunks c ON d.id = c.document_id
-                GROUP BY d.id, d.title, d.summary, d.category, d.keywords, d.source_urls, d.content
+                GROUP BY d.id, d.title, d.summary, d.category, d.keywords, d.source_urls, d.embedding, d.content
                 ORDER BY d.created_at DESC
             """
 
             results = self._execute_query(query)
 
             # FIX: Group lines that belong to the same document record
-            # Format: id|title|summary|category|keywords|source_urls|content_length|chunk_count (8 fields)
+            # Format: id|title|summary|category|keywords|source_urls|embedding|content_length|chunk_count (9 fields)
             # Problem: summary can contain newlines, causing split across multiple array elements
             document_records = []
             current_record_lines = []
 
             for line in results:
                 # Try to detect if this line ends a complete record
-                # Strategy: A complete record has exactly 8 pipe-separated fields
-                # Check from right: last 5 fields are category|keywords|source_urls|content_length|chunk_count
-                right_parts = line.rsplit('|', maxsplit=5)
+                # Strategy: A complete record has exactly 9 pipe-separated fields
+                # Check from right: last 6 fields are category|keywords|source_urls|embedding|content_length|chunk_count
+                right_parts = line.rsplit('|', maxsplit=6)
 
-                if len(right_parts) == 6:
+                if len(right_parts) == 7:
                     # This could be the end of a record
                     # Validation: keywords and source_urls should be arrays (start with '{')
+                    # embedding should be array (start with '[')
                     # content_length and chunk_count should be numbers
                     keywords_field = right_parts[2]
                     urls_field = right_parts[3]
-                    content_len_field = right_parts[4]
-                    chunk_count_field = right_parts[5]
+                    embedding_field = right_parts[4]
+                    content_len_field = right_parts[5]
+                    chunk_count_field = right_parts[6]
 
                     # If fields look correct, this is likely a complete record end
                     if ((keywords_field.startswith('{') or keywords_field == '') and
                         (urls_field.startswith('{') or urls_field == '') and
+                        (embedding_field.startswith('[') or embedding_field == '') and
                         content_len_field.isdigit() and chunk_count_field.isdigit()):
                         # This is the end of a record
                         current_record_lines.append(line)
@@ -682,9 +686,9 @@ class SimpleDocumentDatabase:
             for row in document_records:
                 # Now parse the complete record
                 # Split from right to preserve newlines in summary field
-                right_parts = row.rsplit('|', maxsplit=5)
+                right_parts = row.rsplit('|', maxsplit=6)
 
-                if len(right_parts) >= 6:
+                if len(right_parts) >= 7:
                     # Split the left part to get id and title
                     left_parts = right_parts[0].split('|', maxsplit=2)
 
@@ -696,8 +700,9 @@ class SimpleDocumentDatabase:
                             'category': right_parts[1],
                             'keywords': self._parse_array(right_parts[2]) if right_parts[2] != '' else [],
                             'source_urls': self._parse_array(right_parts[3]) if right_parts[3] != '' else [],
-                            'content_length': int(right_parts[4]) if right_parts[4].isdigit() else 0,
-                            'chunk_count': int(right_parts[5]) if right_parts[5].isdigit() else 0
+                            'embedding': self._parse_vector(right_parts[4]) if right_parts[4] and right_parts[4] != '' else None,
+                            'content_length': int(right_parts[5]) if right_parts[5].isdigit() else 0,
+                            'chunk_count': int(right_parts[6]) if right_parts[6].isdigit() else 0
                         }
                         documents.append(doc)
 
@@ -718,6 +723,20 @@ class SimpleDocumentDatabase:
             return []
 
         return [item.strip('"') for item in array_str.split(',')]
+
+    def _parse_vector(self, vector_str: str) -> List[float]:
+        """Parse PostgreSQL vector string to Python list of floats"""
+        import json
+
+        if not vector_str or vector_str == '':
+            return None
+
+        try:
+            # Vector format: [0.1,0.2,0.3,...]
+            return json.loads(vector_str)
+        except (json.JSONDecodeError, ValueError) as e:
+            print(f"  ⚠️  Error parsing vector: {e}")
+            return None
 
     def begin_transaction(self):
         """Begin database transaction"""

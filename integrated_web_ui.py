@@ -1073,5 +1073,5 @@ if __name__ == '__main__':
     print("=" * 80)
     print()
 
-    # Run server
-    app.run(host='0.0.0.0', port=5001, debug=False, threaded=True)
+    # Run server with auto-reload enabled
+    app.run(host='0.0.0.0', port=5001, debug=True, use_reloader=True, threaded=True)

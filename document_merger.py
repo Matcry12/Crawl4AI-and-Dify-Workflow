@@ -100,9 +100,14 @@ class DocumentMerger:
         """
         import re
 
-        # Extract merged content using delimiters
-        content_pattern = r'===MERGED_CONTENT_START===(.*?)===MERGED_CONTENT_END==='
-        content_match = re.search(content_pattern, response_text, re.DOTALL)
+        # Extract reorganized content using delimiters
+        # Try new format first (REORGANIZED), fallback to old format (MERGED)
+        content_pattern_new = r'===REORGANIZED_CONTENT_START===(.*?)===REORGANIZED_CONTENT_END==='
+        content_pattern_old = r'===MERGED_CONTENT_START===(.*?)===MERGED_CONTENT_END==='
+
+        content_match = re.search(content_pattern_new, response_text, re.DOTALL)
+        if not content_match:
+            content_match = re.search(content_pattern_old, response_text, re.DOTALL)
 
         if content_match:
             merged_content = content_match.group(1).strip()
@@ -179,72 +184,85 @@ class DocumentMerger:
             doc_title = existing_document.get('title', 'Unknown')
             topic_title = topic.get('title', 'Unknown')
 
-            print(f"\n  🔀 Merging '{topic_title}' into '{doc_title}'")
+            print(f"\n  🔀 Merging '{topic_title}' into '{doc_title}' (Append-Then-Rewrite)")
 
-            # Step 1: LLM-based merge
+            # Step 1: APPEND manually (no LLM yet)
             existing_content = existing_document.get('content', '')
             new_content = topic.get('content', topic.get('description', ''))
 
-            prompt = f"""Merge the new topic content into the existing document by EXPANDING and ENRICHING it.
+            print(f"  📎 Step 1: Appending new content manually...")
+            print(f"     Existing: {len(existing_content)} chars")
+            print(f"     New: {len(new_content)} chars")
 
-EXISTING DOCUMENT:
-Title: {doc_title}
-Content:
-{existing_content}
+            # Manual append with clear separator
+            appended_content = f"{existing_content}\n\n---\n\n{new_content}"
 
-NEW TOPIC TO MERGE:
-Title: {topic_title}
-Content:
-{new_content}
+            print(f"     Appended: {len(appended_content)} chars")
 
-MERGE STRATEGY - EXPAND, DON'T CONDENSE:
-1. Analyze the new content:
-   - Does it add NEW information? → APPEND it with full detail
-   - Does it provide ADDITIONAL details about existing topics? → MERGE by ADDING the new details
-   - Does it offer a different PERSPECTIVE or EXAMPLE? → INCLUDE both perspectives
-   - Only if it's COMPLETELY IDENTICAL → Skip, but preserve existing
+            # Step 2: LLM reorganizes the appended content
+            print(f"  🤖 Step 2: Using LLM to reorganize appended content...")
 
-2. Output format (IMPORTANT - follow exactly):
+            prompt = f"""You are given a document with newly appended content. Your task is to REORGANIZE and REWRITE it into a cohesive, well-structured document.
 
-===MERGED_CONTENT_START===
-[Write the complete merged content here]
+DOCUMENT TITLE: {doc_title}
+
+CURRENT CONTENT (with new content appended):
+{appended_content}
+
+YOUR TASK - REORGANIZE AND REWRITE:
+The content above contains the original document + newly added information (separated by ---).
+
+REORGANIZATION STRATEGY:
+1. Read through ALL the content (both original and new sections)
+2. Identify logical sections and themes
+3. Group related information together
+4. Remove the separator (---)
+5. Reorganize into a logical, flowing structure
+6. Rewrite transitions to make it coherent
+7. Preserve 100% of the information - just reorganize it better
+
+OUTPUT FORMAT (IMPORTANT - follow exactly):
+
+===REORGANIZED_CONTENT_START===
+[Write the complete reorganized content here]
+[All information from both sections, but reorganized logically]
+[Remove redundancy but keep all unique details]
 [Can include ANY characters, quotes, code blocks, special chars]
 [No JSON escaping needed]
-[Multiple paragraphs welcome]
-===MERGED_CONTENT_END===
+===REORGANIZED_CONTENT_END===
 
 ===METADATA===
 {{
-  "strategy": "append" | "expand" | "enrich",
-  "summary": "Brief summary (max 200 characters)",
-  "changes_made": "Brief description of what information was ADDED"
+  "strategy": "reorganize",
+  "summary": "Brief summary of the reorganized document (max 200 characters)",
+  "changes_made": "Brief description of how you reorganized the content"
 }}
 ===METADATA_END===
 
-CRITICAL RULES - INFORMATION EXPANSION:
+CRITICAL RULES - REORGANIZATION:
 ✅ DO:
-- PRESERVE 100% of important information from BOTH documents
-- ADD new details, examples, code snippets from the new topic
-- EXPAND explanations with additional context from new content
-- INCLUDE multiple examples if both documents have different ones
-- COMBINE complementary information to create richer content
-- Keep ALL technical details, parameters, warnings from both sources
-- Make the merged document MORE comprehensive than either source alone
+- PRESERVE 100% of important information from both sections
+- Remove the --- separator and make it flow as ONE document
+- Group related topics together logically
+- Create smooth transitions between topics
+- Eliminate true duplicates (exact same info stated twice)
+- Keep ALL technical details, examples, code snippets
+- Make it read as ONE cohesive document, not two glued together
 
 ❌ DON'T:
-- Summarize or condense existing information
-- Remove details to avoid "redundancy" (detail is valuable!)
-- Choose between two good explanations (include both!)
-- Limit content length (merged docs should be LONGER, not shorter)
+- Summarize or condense unique information
+- Remove examples or details that add value
+- Change technical accuracy
+- Skip any important information from either section
 
-GOAL: The merged document should be MORE informative and detailed than the sum of its parts.
+GOAL: Transform the appended content into ONE well-organized, cohesive document that reads naturally.
 
 OUTPUT FORMAT REMINDER:
-1. First: ===MERGED_CONTENT_START=== ... ===MERGED_CONTENT_END===
+1. First: ===REORGANIZED_CONTENT_START=== ... ===REORGANIZED_CONTENT_END===
 2. Then: ===METADATA=== {{...}} ===METADATA_END===
 """
 
-            print(f"  🤖 Generating merge with LLM...")
+            print(f"  🤖 Using LLM to reorganize appended content...")
             self.llm_limiter.wait_if_needed()
             response = self.model.generate_content(
                 prompt,
@@ -258,28 +276,28 @@ OUTPUT FORMAT REMINDER:
             try:
                 merged_content, metadata = self._parse_hybrid_response(
                     response_text,
-                    existing_content,
+                    appended_content,  # Use appended_content as fallback, not existing
                     existing_document
                 )
 
                 merge_strategy = metadata.get('strategy', 'unknown')
                 updated_summary = metadata.get('summary', existing_document.get('summary', ''))
-                changes_made = metadata.get('changes_made', 'Content merged')
+                changes_made = metadata.get('changes_made', 'Content reorganized')
 
-                print(f"  ✅ Merge strategy: {merge_strategy}")
+                print(f"  ✅ Reorganization strategy: {merge_strategy}")
                 print(f"  📝 Changes: {changes_made}")
 
             except Exception as e:
-                print(f"  ❌ Error parsing merge response: {e}")
+                print(f"  ❌ Error parsing reorganization response: {e}")
                 import traceback
                 traceback.print_exc()
 
-                # Fallback: simple concatenation
-                merged_content = f"{existing_content}\n\n---\n\n{new_content}"
+                # Fallback: keep the appended content (manual append without LLM reorganization)
+                merged_content = appended_content
                 updated_summary = existing_document.get('summary', '')
-                merge_strategy = "fallback"
-                changes_made = "Automatic merge (parsing failed)"
-                print(f"  ⚠️  Using fallback merge strategy")
+                merge_strategy = "append-only"
+                changes_made = "Content appended without reorganization (LLM failed)"
+                print(f"  ⚠️  Using fallback: keeping manually appended content")
 
             # Step 2: Update document metadata
             doc_id = existing_document.get('id')

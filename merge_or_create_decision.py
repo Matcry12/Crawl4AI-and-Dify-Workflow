@@ -54,18 +54,29 @@ class MergeOrCreateDecision:
                 'reason': 'No existing documents'
             }
 
-        # Get topic embedding
-        topic_text = f"{topic.get('title', '')} {topic.get('content', '')}"
-        topic_embedding = self.embedder.create_embedding(topic_text)
+        # Get topic embedding (use stored if available, otherwise create)
+        if 'embedding' in topic and topic['embedding']:
+            topic_embedding = topic['embedding']
+        else:
+            topic_text = f"{topic.get('title', '')}. {topic.get('summary', topic.get('content', ''))}"
+            topic_embedding = self.embedder.create_embedding(topic_text)
 
         # Find best matching document
         best_match = None
         best_similarity = 0.0
 
         for doc in existing_documents:
-            # Get document embedding
-            doc_text = f"{doc.get('title', '')} {doc.get('summary', '')} {doc.get('content', '')}"
-            doc_embedding = self.embedder.create_embedding(doc_text)
+            # Use STORED embedding if available (CRITICAL: don't regenerate!)
+            if 'embedding' in doc and doc['embedding']:
+                doc_embedding = doc['embedding']
+            else:
+                # Fallback: create embedding only if not stored
+                # Use title + summary for consistency with how embeddings were created
+                doc_text = f"{doc.get('title', '')}. {doc.get('summary', '')}"
+                doc_embedding = self.embedder.create_embedding(doc_text)
+
+            if not doc_embedding:
+                continue  # Skip if embedding failed
 
             # Calculate similarity
             similarity = self.embedder.calculate_similarity(topic_embedding, doc_embedding)
@@ -131,46 +142,153 @@ class MergeOrCreateDecision:
             }
 
         # Create prompt for LLM
-        prompt = f"""You are a document similarity expert. Decide if a new topic should be MERGED into an existing document or if a NEW document should be CREATED.
+        # Use more content for better decision (1000 chars instead of 500)
+        topic_content = topic.get('content', topic.get('summary', ''))
+        topic_preview = topic_content[:1000] + ('...' if len(topic_content) > 1000 else '')
 
-**New Topic:**
-Title: {topic.get('title', 'N/A')}
-Content: {topic.get('content', '')[:500]}...
+        doc_summary = candidate_doc.get('summary', '')
+        doc_preview = doc_summary[:1000] + ('...' if len(doc_summary) > 1000 else '')
 
-**Candidate Existing Document:**
-Title: {candidate_doc.get('title', 'N/A')}
-Summary: {candidate_doc.get('summary', '')[:500]}...
+        prompt = f"""You are an expert AI system for document organization in a knowledge base. Your task is to decide whether a new topic should be MERGED into an existing document or if a NEW document should be CREATED.
 
-**Similarity Score:** {similarity:.3f} (0.0 = completely different, 1.0 = identical)
+## Context
 
-**Instructions:**
-- If the topics are about the SAME subject/concept, respond with: MERGE
-- If the topics are about DIFFERENT subjects/concepts, respond with: CREATE
-- Consider: Are they discussing the same core idea, even if from different angles?
+The embedding similarity score is **{similarity:.3f}** (range: 0.0 = completely different, 1.0 = identical).
+This is in the uncertain range (0.4-0.85), so we need your expert judgment.
 
-Respond with ONLY one word: MERGE or CREATE
+## New Topic to Process
+
+**Title:** {topic.get('title', 'N/A')}
+
+**Content:**
+{topic_preview}
+
+## Candidate Existing Document
+
+**Title:** {candidate_doc.get('title', 'N/A')}
+
+**Summary:**
+{doc_preview}
+
+## Decision Guidelines
+
+**MERGE** when:
+- Both discuss the SAME core concept/subject (even if from different angles)
+- The new topic would ADD value to the existing document (expand, clarify, provide examples)
+- Users searching for one would likely want to see both together
+- Example: "Python List Methods" + "Python List Comprehensions" → MERGE (both about Python lists)
+
+**CREATE** when:
+- They discuss DIFFERENT core concepts/subjects
+- They belong to separate knowledge domains
+- Merging would create confusion or dilute focus
+- Example: "Python Lists" + "JavaScript Arrays" → CREATE (different languages)
+
+## Few-Shot Examples
+
+**Example 1: MERGE**
+- New Topic: "Python Exception Handling - Try/Except Blocks"
+- Existing Doc: "Python Error Handling Best Practices"
+- Similarity: 0.72
+- Decision: MERGE (same concept - error handling in Python)
+- Reason: Both about Python error handling, would benefit from integration
+
+**Example 2: CREATE**
+- New Topic: "Node.js Package Management with npm"
+- Existing Doc: "Python Package Management with pip"
+- Similarity: 0.68
+- Decision: CREATE (different ecosystems, different tools)
+- Reason: Despite similar concepts, they're for different languages/ecosystems
+
+**Example 3: MERGE**
+- New Topic: "SQL JOIN Types - INNER vs OUTER"
+- Existing Doc: "SQL Query Fundamentals and SELECT Statements"
+- Similarity: 0.75
+- Decision: MERGE (both SQL fundamentals)
+- Reason: JOINs are part of SQL query fundamentals, natural fit
+
+**Example 4: CREATE**
+- New Topic: "CSS Flexbox Layout Techniques"
+- Existing Doc: "HTML Semantic Elements and Structure"
+- Similarity: 0.62
+- Decision: CREATE (CSS vs HTML, different concerns)
+- Reason: Different aspects of web development, separate focus areas
+
+## Your Task
+
+Analyze the new topic and existing document above. Consider:
+1. Are they about the same core concept?
+2. Would merging them help or confuse users?
+3. Do they belong together in a knowledge base?
+
+**Respond in this exact format:**
+
+DECISION: [MERGE or CREATE]
+CONFIDENCE: [HIGH, MEDIUM, or LOW]
+REASONING: [One sentence explaining why]
+
+Example responses:
+- "DECISION: MERGE\\nCONFIDENCE: HIGH\\nREASONING: Both topics cover Python list operations and would benefit from integration."
+- "DECISION: CREATE\\nCONFIDENCE: MEDIUM\\nREASONING: Different programming languages warrant separate documents despite similar concepts."
 """
 
         try:
             response = self.llm.generate_content(prompt)
-            llm_action = response.text.strip().upper()
+            response_text = response.text.strip()
 
-            if 'MERGE' in llm_action:
+            # Parse structured response
+            decision = None
+            confidence = 'medium'  # default
+            reasoning = None
+
+            # Extract DECISION
+            if 'DECISION:' in response_text:
+                decision_line = [line for line in response_text.split('\n') if 'DECISION:' in line][0]
+                if 'MERGE' in decision_line.upper():
+                    decision = 'merge'
+                elif 'CREATE' in decision_line.upper():
+                    decision = 'create'
+
+            # Extract CONFIDENCE
+            if 'CONFIDENCE:' in response_text:
+                confidence_line = [line for line in response_text.split('\n') if 'CONFIDENCE:' in line][0]
+                if 'HIGH' in confidence_line.upper():
+                    confidence = 'high'
+                elif 'LOW' in confidence_line.upper():
+                    confidence = 'low'
+                else:
+                    confidence = 'medium'
+
+            # Extract REASONING
+            if 'REASONING:' in response_text:
+                reasoning_line = [line for line in response_text.split('\n') if 'REASONING:' in line][0]
+                reasoning = reasoning_line.split('REASONING:', 1)[1].strip()
+
+            # Fallback to simple parsing if structured format not found
+            if not decision:
+                response_upper = response_text.upper()
+                if 'MERGE' in response_upper:
+                    decision = 'merge'
+                else:
+                    decision = 'create'
+
+            # Build response
+            if decision == 'merge':
                 return {
                     'action': 'merge',
                     'target_doc_id': candidate_doc['id'],
                     'target_doc_title': candidate_doc.get('title', 'Unknown'),
                     'similarity': similarity,
-                    'reason': f'LLM verified merge (similarity: {similarity:.3f})',
-                    'confidence': 'medium',
+                    'reason': reasoning if reasoning else f'LLM verified merge (similarity: {similarity:.3f})',
+                    'confidence': confidence,
                     'llm_used': True
                 }
             else:
                 return {
                     'action': 'create',
                     'similarity': similarity,
-                    'reason': f'LLM recommended new document (similarity: {similarity:.3f})',
-                    'confidence': 'medium',
+                    'reason': reasoning if reasoning else f'LLM recommended new document (similarity: {similarity:.3f})',
+                    'confidence': confidence,
                     'llm_used': True
                 }
 

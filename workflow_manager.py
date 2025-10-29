@@ -673,29 +673,51 @@ class WorkflowManager:
                         total_docs_created += save_result['success_count']
                         print(f"   ✅  Saved {save_result['success_count']}/{len(new_docs)} documents")
 
-                # Step 5: Merge documents
+                # Step 5: Merge documents (SEQUENTIAL to handle same-document merges)
                 if merge_topics and merge_documents:
                     print(f"🔀  Step 4b: Merging {len(merge_topics)} topics with existing documents...")
-                    merge_pairs = []
+
+                    # Group topics by target document ID
+                    from collections import defaultdict
+                    topics_by_doc = defaultdict(list)
                     for mt in merge_topics:
                         target_doc_id = mt['decision']['target_doc_id']
-                        # Find the existing document by ID
-                        target_doc = next((doc for doc in existing_docs if doc['id'] == target_doc_id), None)
-                        if target_doc:
-                            merge_pairs.append({
-                                'topic': mt['topic'],
-                                'existing_document': target_doc
-                            })
+                        topics_by_doc[target_doc_id].append(mt)
 
-                    merge_results = self.doc_merger.merge_documents_batch(merge_pairs)
-                    merged_docs = merge_results.get('merged_documents', [])
+                    print(f"   📊 Merging into {len(topics_by_doc)} unique documents")
 
-                    # Update database
-                    if merged_docs:
-                        for doc in merged_docs:
-                            self.db.update_document_with_chunks(doc)
-                        total_docs_merged += len(merged_docs)
-                        print(f"   ✅  Updated {len(merged_docs)} documents")
+                    # Process each document sequentially
+                    for doc_id, merge_list in topics_by_doc.items():
+                        doc_title = merge_list[0]['decision'].get('target_doc_title', 'Unknown')
+                        print(f"\n   📄 Document: '{doc_title}'")
+                        print(f"      Topics to merge: {len(merge_list)}")
+
+                        # Load document ONCE
+                        current_doc = self.db.get_document_by_id(doc_id)
+                        if not current_doc:
+                            print(f"      ⚠️  Document not found, skipping")
+                            continue
+
+                        # Merge topics one by one, updating current_doc each time
+                        for i, mt in enumerate(merge_list, 1):
+                            topic = mt['topic']
+                            print(f"      [{i}/{len(merge_list)}] Merging '{topic['title']}'...")
+
+                            merged_doc = self.doc_merger.merge_document(topic, current_doc)
+                            if merged_doc:
+                                # Update current_doc for next iteration
+                                current_doc = merged_doc
+                                print(f"            ✅ Success (doc now {len(merged_doc.get('content', ''))} chars)")
+                            else:
+                                print(f"            ❌ Failed")
+
+                        # Save final merged document (after all topics merged)
+                        if current_doc != self.db.get_document_by_id(doc_id):  # Check if changed
+                            self.db.update_document_with_chunks(current_doc)
+                            total_docs_merged += 1
+                            print(f"      ✅ Saved with {len(merge_list)} topics merged")
+
+                    print(f"\n   ✅  Updated {total_docs_merged} documents total")
 
                 # Commit transaction - all operations succeeded
                 self.db.commit_transaction()
@@ -888,8 +910,8 @@ async def main():
     manager = WorkflowManager()
 
     await manager.run(
-        start_url="https://docs.eosnetwork.com/docs/latest/quick-start/introduction",
-        max_pages=10,
+        start_url="https://help.tokenpocket.pro/en/wallet-operation/how-to-create-a-wallet/eos",
+        max_pages=1,
         same_domain_only=True,
         output_dir="bfs_crawled",
         extract_topics=True,

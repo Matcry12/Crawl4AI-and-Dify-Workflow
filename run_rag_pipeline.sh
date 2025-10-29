@@ -234,99 +234,6 @@ dify_api_status() {
     fi
 }
 
-################################################################################
-# Web UI Functions
-################################################################################
-
-start_web_ui() {
-    print_header "Starting Web UI"
-
-    check_python
-
-    # Check if already running
-    if [ -f "$WEB_UI_PID_FILE" ]; then
-        PID=$(cat "$WEB_UI_PID_FILE")
-        if ps -p "$PID" > /dev/null 2>&1; then
-            print_warning "Web UI already running (PID: $PID)"
-            return 0
-        fi
-    fi
-
-    # Start UI
-    print_info "Starting Web UI on port $WEB_UI_PORT..."
-
-    if [ ! -f "integrated_web_ui.py" ]; then
-        print_error "integrated_web_ui.py not found"
-        return 1
-    fi
-
-    # Load GEMINI_API_KEY
-    if [ -f ".env" ]; then
-        export $(grep -v '^#' .env | grep GEMINI_API_KEY | xargs)
-    fi
-
-    if [ -z "$GEMINI_API_KEY" ]; then
-        print_error "GEMINI_API_KEY not found in .env"
-        return 1
-    fi
-
-    # Start in background
-    nohup python3 integrated_web_ui.py > logs/web_ui.log 2>&1 &
-    PID=$!
-    echo "$PID" > "$WEB_UI_PID_FILE"
-
-    sleep 3
-
-    # Verify it started
-    if ps -p "$PID" > /dev/null 2>&1; then
-        print_success "Web UI started (PID: $PID)"
-        echo "   URL: http://localhost:$WEB_UI_PORT"
-        echo "   Features:"
-        echo "     • Workflow Manager (configure and run crawls)"
-        echo "     • Document Viewer (browse database)"
-        echo "     • Statistics Dashboard"
-        echo "   Logs: logs/web_ui.log"
-    else
-        print_error "Failed to start Web UI"
-        rm -f "$WEB_UI_PID_FILE"
-        return 1
-    fi
-}
-
-stop_web_ui() {
-    print_header "Stopping Web UI"
-
-    if [ -f "$WEB_UI_PID_FILE" ]; then
-        PID=$(cat "$WEB_UI_PID_FILE")
-        if ps -p "$PID" > /dev/null 2>&1; then
-            kill "$PID"
-            rm -f "$WEB_UI_PID_FILE"
-            print_success "Web UI stopped"
-        else
-            print_warning "Web UI not running"
-            rm -f "$WEB_UI_PID_FILE"
-        fi
-    else
-        print_warning "No PID file found"
-    fi
-}
-
-web_ui_status() {
-    if [ -f "$WEB_UI_PID_FILE" ]; then
-        PID=$(cat "$WEB_UI_PID_FILE")
-        if ps -p "$PID" > /dev/null 2>&1; then
-            print_success "Web UI is running (PID: $PID)"
-            echo "   URL: http://localhost:$WEB_UI_PORT"
-        else
-            print_error "Web UI is not running"
-            rm -f "$WEB_UI_PID_FILE"
-            return 1
-        fi
-    else
-        print_error "Web UI is not running"
-        return 1
-    fi
-}
 
 ################################################################################
 # Combined Functions
@@ -345,38 +252,22 @@ start_all() {
 
     start_dify_api
     echo ""
-    sleep 2
-
-    start_web_ui
-    echo ""
 
     print_header "✅ RAG Pipeline Started Successfully"
 
     echo -e "${GREEN}🎉 All services are running!${NC}"
     echo ""
     echo "📊 Access Points:"
-    echo "   • Web UI:       http://localhost:$WEB_UI_PORT"
     echo "   • Dify API:     http://localhost:$DIFY_API_PORT"
     echo "   • Database:     localhost:$POSTGRES_PORT"
     echo ""
-    echo "📝 Next Steps:"
-    echo "   1. Open http://localhost:$WEB_UI_PORT in your browser"
-    echo "   2. Go to 'Workflow' tab to run a crawl"
-    echo "   3. Configure URL, pages, and LLM model"
-    echo "   4. Click 'Start Workflow' and watch live logs"
-    echo "   5. View results in 'Documents' tab"
-    echo ""
     echo "📋 Logs:"
-    echo "   • Web UI:   tail -f logs/web_ui.log"
     echo "   • Dify API: tail -f logs/dify_api.log"
     echo ""
 }
 
 stop_all() {
     print_header "🛑 Stopping RAG Pipeline"
-
-    stop_web_ui
-    echo ""
 
     stop_dify_api
     echo ""
@@ -404,23 +295,12 @@ status_all() {
     echo -e "${CYAN}Dify API:${NC}"
     dify_api_status || true
     echo ""
-
-    echo -e "${CYAN}Web UI:${NC}"
-    web_ui_status || true
-    echo ""
 }
 
 show_logs() {
     SERVICE=$1
 
     case $SERVICE in
-        "ui"|"web"|"webui")
-            if [ -f "logs/web_ui.log" ]; then
-                tail -f logs/web_ui.log
-            else
-                print_error "Log file not found: logs/web_ui.log"
-            fi
-            ;;
         "api"|"dify")
             if [ -f "logs/dify_api.log" ]; then
                 tail -f logs/dify_api.log
@@ -430,7 +310,7 @@ show_logs() {
             ;;
         *)
             print_error "Unknown service: $SERVICE"
-            echo "Available: ui, api"
+            echo "Available: api"
             ;;
     esac
 }
@@ -452,10 +332,8 @@ show_menu() {
     echo ""
     echo "  ${BLUE}5)${NC} Start database only"
     echo "  ${BLUE}6)${NC} Start Dify API only"
-    echo "  ${BLUE}7)${NC} Start Web UI only"
     echo ""
-    echo "  ${YELLOW}8)${NC} View Web UI logs"
-    echo "  ${YELLOW}9)${NC} View Dify API logs"
+    echo "  ${YELLOW}7)${NC} View Dify API logs"
     echo ""
     echo "  ${RED}0)${NC} Exit"
     echo ""
@@ -474,9 +352,7 @@ interactive_menu() {
             4) status_all; read -p "Press Enter to continue..."; ;;
             5) start_database; read -p "Press Enter to continue..."; ;;
             6) start_dify_api; read -p "Press Enter to continue..."; ;;
-            7) start_web_ui; read -p "Press Enter to continue..."; ;;
-            8) show_logs "ui"; ;;
-            9) show_logs "api"; ;;
+            7) show_logs "api"; ;;
             0) exit 0 ;;
             *) print_error "Invalid option"; sleep 1; ;;
         esac
@@ -493,20 +369,17 @@ show_help() {
     echo "Usage: $0 [COMMAND]"
     echo ""
     echo "Commands:"
-    echo "  start          Start all services (database, API, UI)"
+    echo "  start          Start all services (database, API)"
     echo "  stop           Stop all services"
     echo "  restart        Restart all services"
     echo "  status         Show status of all services"
     echo ""
     echo "  start-db       Start database only"
     echo "  start-api      Start Dify API only"
-    echo "  start-ui       Start Web UI only"
     echo ""
     echo "  stop-db        Stop database only"
     echo "  stop-api       Stop Dify API only"
-    echo "  stop-ui        Stop Web UI only"
     echo ""
-    echo "  logs-ui        Show Web UI logs (tail -f)"
     echo "  logs-api       Show Dify API logs (tail -f)"
     echo ""
     echo "  menu           Show interactive menu"
@@ -515,7 +388,7 @@ show_help() {
     echo "Examples:"
     echo "  $0 start       # Start everything"
     echo "  $0 status      # Check what's running"
-    echo "  $0 logs-ui     # Watch UI logs"
+    echo "  $0 logs-api    # Watch API logs"
     echo ""
 }
 
@@ -551,20 +424,11 @@ case $COMMAND in
     "start-api")
         start_dify_api
         ;;
-    "start-ui")
-        start_web_ui
-        ;;
     "stop-db")
         stop_database
         ;;
     "stop-api")
         stop_dify_api
-        ;;
-    "stop-ui")
-        stop_web_ui
-        ;;
-    "logs-ui")
-        show_logs "ui"
         ;;
     "logs-api")
         show_logs "api"
