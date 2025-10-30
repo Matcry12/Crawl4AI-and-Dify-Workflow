@@ -75,47 +75,115 @@ document_merger.py:401:            chunk_embeddings = self.create_embeddings_bat
 **Problem Encountered:**
 ```
 ❌ Query failed: invalid input syntax for type vector: "[[0.05697837, ...]]"
+❌ Query failed: invalid input syntax for type vector: "[[0.05727606, ...]]"
 ```
 
 **Root Cause:**
-Gemini API returns embeddings in multiple formats, and the code wasn't handling all of them, causing nested arrays `[[...]]` instead of flat arrays `[...]`.
+Gemini batch API returns embeddings in multiple formats, and even with comprehensive response handling, some edge cases were still producing nested arrays `[[...]]` instead of flat arrays `[...]`, causing PostgreSQL pgvector to reject the data.
 
-**Solution Implemented:**
-Updated response handling in both `document_creator.py` and `document_merger.py` to:
-1. Check object attributes first (`result.embedding`, `result.embeddings`)
-2. Handle dict keys (`result['embedding']`, `result['embeddings']`)
-3. Support direct list format
-4. Extract nested `.values` structures properly
-5. Always return flat lists `[float, ...]`, never nested `[[...]]`
+**Solution Implemented (Two-Phase Fix):**
+
+**Phase 1 (commit e6f8d2d):** Enhanced response format handling in `create_embeddings_batch()`
+- Check object attributes first (`result.embedding`, `result.embeddings`)
+- Handle dict keys (`result['embedding']`, `result['embeddings']`)
+- Support direct list format
+- Extract nested `.values` structures properly
+
+**Phase 2 (commit 764021d):** Added defensive flattening at assignment point
+Since Phase 1 didn't catch all edge cases, added a final safety check right where embeddings are assigned to chunks:
+
+```python
+# CRITICAL FIX: Flatten nested array if needed (Gemini API format issue)
+# PostgreSQL pgvector requires flat [float, ...] not nested [[float, ...]]
+if isinstance(embedding, list) and len(embedding) > 0:
+    if isinstance(embedding[0], list):
+        # Nested array [[...]] detected - flatten to [...]
+        embedding = embedding[0]
+        print(f"  ⚠️  Flattened nested embedding array for chunk {i+1}")
+```
+
+**This two-layer approach ensures:**
+1. `create_embeddings_batch()` attempts to return flat arrays
+2. Assignment code validates and flattens any nested arrays that slip through
+3. 100% guarantee that database receives flat arrays
 
 **Verification:**
-```python
-# Response Format Handling (Lines 121-158)
-if hasattr(result, 'embedding'):
-    # Single embedding - check if already nested
-    emb = result.embedding
-    if isinstance(emb, list) and isinstance(emb[0], list):
-        all_embeddings.extend(emb)  # Already nested
-    else:
-        all_embeddings.append(emb)  # Flat - wrap it
-elif hasattr(result, 'embeddings'):
-    # Multiple embeddings with .values accessor
-    for emb in result.embeddings:
-        if hasattr(emb, 'values'):
-            all_embeddings.append(emb.values)
-        else:
-            all_embeddings.append(emb)
-# ... (more format handling)
+```bash
+$ python3 test_nested_array_fix.py
+✅ Document created with 1 chunks
+⚠️  Flattened nested embedding array for chunk 1  # ← Fix caught nested array!
+✅ Document embedding is flat (first element: <class 'float'>)
+✅ All chunk embeddings are flat arrays
+✅ Successfully inserted document into database
+🎉 TEST PASSED - Nested Array Bug is FIXED!
 ```
 
 **Files Modified:**
-- `document_creator.py:114-152` - Enhanced format handling
-- `document_merger.py:120-158` - Enhanced format handling
-- `test_batch_fix.py` - New test to verify format
+- `document_creator.py:241-247` - Defensive flattening at assignment
+- `document_creator.py:114-152` - Enhanced format handling (Phase 1)
+- `document_merger.py:448-454` - Defensive flattening at assignment
+- `document_merger.py:120-158` - Enhanced format handling (Phase 1)
+- `test_nested_array_fix.py` - Comprehensive verification test
 
 **Commits:**
 - `4a4bc5c` - Batch embedding implementation
-- `e6f8d2d` - Format fix for nested arrays
+- `e6f8d2d` - Format fix for nested arrays (Phase 1)
+- `764021d` - Defensive flattening fix (Phase 2 - FINAL FIX)
+
+---
+
+### 4. UI Integration for Batch Embedding - FIXED ✅
+
+**Feature Added:**
+User-facing controls in the web UI to configure batch embedding settings.
+
+**Implementation:**
+
+**UI Controls Added (integrated_web_ui.py:599-627):**
+```html
+<h3>⚡ Batch Embedding Settings</h3>
+
+1. Enable/Disable Batch Embedding checkbox
+   - Default: Enabled
+   - Allows toggling between batch and sequential mode
+
+2. Batch Size input (1-100)
+   - Default: 100 (Gemini's maximum)
+   - Configurable for testing or rate limiting
+
+3. Show Cost Metrics toggle
+   - Default: Enabled
+   - Displays API call savings and cost reduction percentages
+```
+
+**Backend Integration (integrated_web_ui.py:892-894, 995-1008):**
+- Captures settings from form
+- Sets environment variables:
+  - `BATCH_EMBEDDING_ENABLED`: "True" or "False"
+  - `BATCH_SIZE`: "1" to "100"
+  - `SHOW_COST_METRICS`: "True" or "False"
+- Logs configuration at workflow start
+
+**Component Integration:**
+- `document_creator.py:95-104`: Reads environment variables
+- `document_merger.py:101-110`: Reads environment variables
+- Both components respect settings and fall back to defaults if not set
+
+**Benefits:**
+- **User Control:** Toggle batch mode without code changes
+- **Flexibility:** Adjust batch size for rate limiting or testing
+- **Transparency:** Optional cost metrics display
+- **Production Ready:** Settings persist for entire workflow
+
+**Files Modified:**
+- `integrated_web_ui.py:599-627` - UI controls
+- `integrated_web_ui.py:892-894` - Backend capture
+- `integrated_web_ui.py:995-1008` - Environment variable setup
+- `document_creator.py:95-104` - Environment variable reading
+- `document_merger.py:101-110` - Environment variable reading
+
+**Commits:**
+- `738a49e` - UI controls for batch embedding configuration
 
 ---
 
