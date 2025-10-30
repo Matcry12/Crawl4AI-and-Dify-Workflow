@@ -117,16 +117,45 @@ class DocumentMerger:
                     task_type="retrieval_document"
                 )
 
-                # Extract embeddings from result
-                if isinstance(result, dict) and 'embedding' in result:
-                    # Single embedding returned (batch of 1)
-                    all_embeddings.append(result['embedding'])
+                # Extract embeddings from result - Gemini returns different formats
+                if hasattr(result, 'embedding'):
+                    # Single embedding via attribute (batch of 1)
+                    emb = result.embedding
+                    if isinstance(emb, list) and len(emb) > 0 and isinstance(emb[0], list):
+                        # Already nested: [[...]]
+                        all_embeddings.extend(emb)
+                    else:
+                        # Flat: [...]
+                        all_embeddings.append(emb)
+                elif hasattr(result, 'embeddings'):
+                    # Multiple embeddings via attribute
+                    for emb in result.embeddings:
+                        if hasattr(emb, 'values'):
+                            all_embeddings.append(emb.values)
+                        elif isinstance(emb, list):
+                            all_embeddings.append(emb)
+                        else:
+                            all_embeddings.append(list(emb))
+                elif isinstance(result, dict) and 'embedding' in result:
+                    # Dict with single embedding
+                    emb = result['embedding']
+                    all_embeddings.append(emb)
                 elif isinstance(result, dict) and 'embeddings' in result:
-                    # Multiple embeddings returned
-                    all_embeddings.extend([emb['values'] for emb in result['embeddings']])
-                else:
-                    # Fallback: assume result is list of embeddings
+                    # Dict with multiple embeddings
+                    for emb_data in result['embeddings']:
+                        if isinstance(emb_data, dict) and 'values' in emb_data:
+                            all_embeddings.append(emb_data['values'])
+                        elif isinstance(emb_data, list):
+                            all_embeddings.append(emb_data)
+                        else:
+                            all_embeddings.append(list(emb_data))
+                elif isinstance(result, list):
+                    # Direct list of embeddings [[...], [...]]
                     all_embeddings.extend(result)
+                else:
+                    # Unknown format - try to convert
+                    print(f"  ⚠️  Unknown embedding result format: {type(result)}")
+                    all_embeddings.extend(list(result))
 
             return all_embeddings
 
