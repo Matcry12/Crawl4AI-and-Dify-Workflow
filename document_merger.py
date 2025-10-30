@@ -445,6 +445,14 @@ OUTPUT FORMAT REMINDER:
             chunks_with_embeddings = []
             for i, (chunk, embedding) in enumerate(zip(new_chunks, chunk_embeddings)):
                 if embedding:
+                    # CRITICAL FIX: Flatten nested array if needed (Gemini API format issue)
+                    # PostgreSQL pgvector requires flat [float, ...] not nested [[float, ...]]
+                    if isinstance(embedding, list) and len(embedding) > 0:
+                        if isinstance(embedding[0], list):
+                            # Nested array [[...]] detected - flatten to [...]
+                            embedding = embedding[0]
+                            print(f"  ⚠️  Flattened nested embedding array for chunk {i+1}")
+
                     chunk['embedding'] = embedding
                     chunks_with_embeddings.append(chunk)
                 else:
