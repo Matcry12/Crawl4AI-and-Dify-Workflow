@@ -135,8 +135,15 @@ class DocumentCreator:
                     # Single embedding via attribute (batch of 1)
                     emb = result.embedding
                     if isinstance(emb, list) and len(emb) > 0 and isinstance(emb[0], list):
-                        # Already nested: [[...]]
-                        all_embeddings.extend(emb)
+                        # Nested structure detected
+                        # Check if it's double-nested: [[emb1, emb2, emb3, ...]] (all embeddings in one wrapper)
+                        if len(emb) == 1 and isinstance(emb[0], list) and len(emb[0]) == len(batch):
+                            # Double-nested case: [[emb1, emb2, ...]] where inner list has ALL embeddings
+                            print(f"  🔍 DEBUG: Detected double-nested format, flattening...")
+                            all_embeddings.extend(emb[0])  # Extract the inner list with all embeddings
+                        else:
+                            # Regular nested: [[emb1], [emb2], [emb3], ...] (each embedding wrapped separately)
+                            all_embeddings.extend(emb)
                     else:
                         # Flat: [...]
                         all_embeddings.append(emb)
