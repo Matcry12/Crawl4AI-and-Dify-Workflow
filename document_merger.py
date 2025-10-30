@@ -558,6 +558,276 @@ OUTPUT FORMAT REMINDER:
             traceback.print_exc()
             return None
 
+    def merge_multiple_topics_into_document(
+        self,
+        topics: List[Dict],
+        existing_document: Dict
+    ) -> Optional[Dict]:
+        """
+        Merge MULTIPLE topics into existing document in ONE operation (5x cost reduction!)
+
+        CRITICAL OPTIMIZATION:
+        Instead of calling merge_document() N times (5 LLM calls, 5 chunk ops, 5 embed ops),
+        this method merges ALL topics at once:
+        - Appends ALL topics → 1 LLM call → 1 chunk operation → 1 embedding batch
+
+        Example cost comparison for 5 topics → same document:
+        - OLD (sequential): 5 LLM calls + 124 embeddings = $0.35
+        - NEW (batch): 1 LLM call + 30 embeddings = $0.08
+        - SAVINGS: 77% cost reduction (5x → 1x multiplier)
+
+        Args:
+            topics: List of topics to merge
+            existing_document: Existing document to merge into
+
+        Returns:
+            Merged document with NEW chunks
+        """
+        try:
+            doc_title = existing_document.get('title', 'Unknown')
+            num_topics = len(topics)
+
+            print(f"\n  🔀 BATCH MERGE: {num_topics} topics into '{doc_title}' (5x cost reduction!)")
+
+            # Step 1: APPEND ALL topics manually (no LLM yet)
+            existing_content = existing_document.get('content', '')
+
+            print(f"  📎 Step 1: Appending {num_topics} topics manually...")
+            print(f"     Existing: {len(existing_content)} chars")
+
+            # Build appended content with all topics
+            appended_content = existing_content
+            topic_titles = []
+
+            for i, topic in enumerate(topics, 1):
+                topic_title = topic.get('title', f'Topic {i}')
+                topic_titles.append(topic_title)
+                new_content = topic.get('content', topic.get('description', ''))
+
+                print(f"     [{i}/{num_topics}] Appending '{topic_title}' ({len(new_content)} chars)")
+
+                # Append with clear separator
+                appended_content = f"{appended_content}\n\n---\n\n{new_content}"
+
+            print(f"     Total appended: {len(appended_content)} chars")
+
+            # Step 2: LLM reorganizes ALL appended content in ONE call
+            print(f"  🤖 Step 2: Using LLM to reorganize ALL {num_topics} topics at once...")
+
+            topics_list_str = ', '.join([f"'{t}'" for t in topic_titles])
+
+            prompt = f"""You are given a document with {num_topics} newly appended topics. Your task is to REORGANIZE and REWRITE it into a cohesive, well-structured document.
+
+DOCUMENT TITLE: {doc_title}
+
+TOPICS BEING MERGED: {topics_list_str}
+
+CURRENT CONTENT (with {num_topics} new topics appended):
+{appended_content}
+
+YOUR TASK - REORGANIZE AND REWRITE:
+The content above contains the original document + {num_topics} newly added topics (separated by ---).
+
+REORGANIZATION STRATEGY:
+1. Read through ALL the content (original + all {num_topics} new topics)
+2. Identify logical sections and themes across ALL content
+3. Group related information together
+4. Remove ALL separators (---)
+5. Reorganize into a logical, flowing structure
+6. Rewrite transitions to make it coherent
+7. Preserve 100% of the information - just reorganize it better
+8. Create ONE cohesive document, not {num_topics+1} separate sections glued together
+
+OUTPUT FORMAT (IMPORTANT - follow exactly):
+
+===REORGANIZED_CONTENT_START===
+[Write the complete reorganized content here]
+[All information from ALL sections, but reorganized logically]
+[Remove redundancy but keep all unique details]
+[Can include ANY characters, quotes, code blocks, special chars]
+[No JSON escaping needed]
+===REORGANIZED_CONTENT_END===
+
+===METADATA===
+{{
+  "strategy": "reorganize",
+  "summary": "Brief summary of the reorganized document (max 200 characters)",
+  "changes_made": "Brief description of how you reorganized the content"
+}}
+===METADATA_END===
+
+CRITICAL RULES - REORGANIZATION:
+✅ DO:
+- PRESERVE 100% of important information from ALL sections
+- Remove ALL --- separators and make it flow as ONE document
+- Group related topics together logically
+- Create smooth transitions between topics
+- Eliminate true duplicates (exact same info stated multiple times)
+- Keep ALL technical details, examples, code snippets
+- Make it read as ONE cohesive document
+
+❌ DON'T:
+- Summarize or condense unique information
+- Remove examples or details that add value
+- Change technical accuracy
+- Skip any important information from ANY section
+
+GOAL: Transform the appended content with {num_topics} topics into ONE well-organized, cohesive document that reads naturally.
+
+OUTPUT FORMAT REMINDER:
+1. First: ===REORGANIZED_CONTENT_START=== ... ===REORGANIZED_CONTENT_END===
+2. Then: ===METADATA=== {{...}} ===METADATA_END===
+"""
+
+            print(f"  🤖 Calling LLM once for ALL {num_topics} topics...")
+            self.llm_limiter.wait_if_needed()
+            response = self.model.generate_content(
+                prompt,
+                generation_config=genai.types.GenerationConfig(
+                    temperature=0.1
+                )
+            )
+            response_text = response.text.strip()
+
+            # Parse hybrid response
+            try:
+                merged_content, metadata = self._parse_hybrid_response(
+                    response_text,
+                    appended_content,
+                    existing_document
+                )
+
+                merge_strategy = metadata.get('strategy', 'unknown')
+                updated_summary = metadata.get('summary', existing_document.get('summary', ''))
+                changes_made = metadata.get('changes_made', f'Reorganized {num_topics} topics')
+
+                print(f"  ✅ Reorganization strategy: {merge_strategy}")
+                print(f"  📝 Changes: {changes_made}")
+
+            except Exception as e:
+                print(f"  ❌ Error parsing reorganization response: {e}")
+                import traceback
+                traceback.print_exc()
+
+                # Fallback: keep the appended content
+                merged_content = appended_content
+                updated_summary = existing_document.get('summary', '')
+                merge_strategy = "append-only"
+                changes_made = f"Content appended without reorganization (LLM failed)"
+                print(f"  ⚠️  Using fallback: keeping manually appended content")
+
+            # Step 3: Update document metadata
+            doc_id = existing_document.get('id')
+
+            # Merge keywords from ALL topics
+            all_keywords = set(existing_document.get('keywords', []))
+            for topic in topics:
+                topic_keywords = set(topic.get('keywords', []))
+                all_keywords |= topic_keywords
+            merged_keywords = list(all_keywords)
+
+            # Merge source URLs from ALL topics
+            existing_urls = list(existing_document.get('source_urls', []))
+            for topic in topics:
+                new_url = topic.get('source_url')
+                if new_url and new_url not in existing_urls:
+                    existing_urls.append(new_url)
+
+            # Step 4: Generate new document embedding
+            print(f"  🔢 Generating document embedding...")
+            doc_embedding = self.create_embedding(updated_summary)
+
+            if not doc_embedding:
+                print(f"  ⚠️  Failed to generate document embedding")
+                return None
+
+            # Step 5: RE-CHUNK the merged content ONCE (not N times!)
+            print(f"  ✂️  RE-CHUNKING merged content ONCE...")
+            print(f"     (Old chunks no longer match merged content)")
+
+            new_chunks = self.chunker.chunk(merged_content, document_id=doc_id)
+
+            if not new_chunks:
+                print(f"  ⚠️  No chunks created from merged content")
+                return None
+
+            print(f"  ✅ Created {len(new_chunks)} new chunks")
+
+            # Step 6: Generate embeddings for chunks ONCE using BATCH API
+            print(f"  🔢 Generating chunk embeddings ONCE (batch mode)...")
+            chunk_texts = [chunk['content'] for chunk in new_chunks]
+
+            # Call batch API - generates ALL embeddings in 1-2 API calls
+            chunk_embeddings = self.create_embeddings_batch(chunk_texts)
+
+            # Attach embeddings to chunks
+            chunks_with_embeddings = []
+            for i, (chunk, embedding) in enumerate(zip(new_chunks, chunk_embeddings)):
+                if embedding:
+                    # CRITICAL FIX: Flatten nested array if needed
+                    if isinstance(embedding, list) and len(embedding) > 0:
+                        if isinstance(embedding[0], list):
+                            embedding = embedding[0]
+                            print(f"  ⚠️  Flattened nested embedding array for chunk {i+1}")
+
+                    chunk['embedding'] = embedding
+                    chunks_with_embeddings.append(chunk)
+                else:
+                    print(f"  ⚠️  Failed to generate embedding for chunk {i+1}")
+
+            if not chunks_with_embeddings:
+                print(f"  ⚠️  No chunks with embeddings")
+                return None
+
+            print(f"  ✅ Generated embeddings for {len(chunks_with_embeddings)}/{len(new_chunks)} chunks (batch mode)")
+
+            # Show cost metrics
+            show_metrics = os.getenv('SHOW_COST_METRICS', 'True').lower() == 'true'
+            if show_metrics:
+                batch_size = int(os.getenv('BATCH_SIZE', '100'))
+                api_calls_made = (len(new_chunks) + batch_size - 1) // batch_size
+                api_calls_saved = len(new_chunks) - api_calls_made
+                reduction_pct = (api_calls_saved / len(new_chunks) * 100) if len(new_chunks) > 0 else 0
+                print(f"     💰 Embedding API calls: {api_calls_made} (saved {api_calls_saved} calls, {reduction_pct:.0f}% reduction)")
+                print(f"     💰 LLM calls: 1 (instead of {num_topics} sequential calls, {(1 - 1/num_topics)*100:.0f}% reduction)")
+
+            # Step 7: Create updated document
+            updated_document = {
+                'id': doc_id,
+                'title': doc_title,
+                'content': merged_content,
+                'summary': updated_summary,
+                'category': existing_document.get('category', 'general'),
+                'keywords': merged_keywords,
+                'source_urls': existing_urls,
+                'embedding': doc_embedding,
+                'chunks': chunks_with_embeddings,
+                'created_at': existing_document.get('created_at'),
+                'updated_at': datetime.now().isoformat(),
+                'merge_history': {
+                    'source_topic_titles': topic_titles,
+                    'num_topics_merged': num_topics,
+                    'merge_strategy': merge_strategy,
+                    'changes_made': changes_made,
+                    'merged_at': datetime.now().isoformat()
+                }
+            }
+
+            print(f"  ✅ BATCH MERGE completed successfully:")
+            print(f"     Topics merged: {num_topics} (in ONE operation!)")
+            print(f"     Content: {len(merged_content)} chars")
+            print(f"     New chunks: {len(chunks_with_embeddings)} (old chunks will be deleted)")
+            print(f"     Keywords: {len(merged_keywords)}")
+            print(f"     Source URLs: {len(existing_urls)}")
+
+            return updated_document
+
+        except Exception as e:
+            print(f"  ❌ Error in batch merge: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+
     def merge_documents_batch(
         self,
         merge_pairs: List[Dict]

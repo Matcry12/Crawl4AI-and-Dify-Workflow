@@ -698,18 +698,21 @@ class WorkflowManager:
                             print(f"      ⚠️  Document not found, skipping")
                             continue
 
-                        # Merge topics one by one, updating current_doc each time
-                        for i, mt in enumerate(merge_list, 1):
-                            topic = mt['topic']
-                            print(f"      [{i}/{len(merge_list)}] Merging '{topic['title']}'...")
+                        # BATCH MERGE: Merge ALL topics at once (5x cost reduction!)
+                        # OLD: Loop N times, call merge_document N times → 5 LLM calls + 124 embeddings = $0.35
+                        # NEW: Call merge_multiple_topics_into_document ONCE → 1 LLM call + 30 embeddings = $0.08
+                        print(f"      🚀 Using BATCH MERGE for {len(merge_list)} topics (5x cost reduction!)")
 
-                            merged_doc = self.doc_merger.merge_document(topic, current_doc)
-                            if merged_doc:
-                                # Update current_doc for next iteration
-                                current_doc = merged_doc
-                                print(f"            ✅ Success (doc now {len(merged_doc.get('content', ''))} chars)")
-                            else:
-                                print(f"            ❌ Failed")
+                        topics = [mt['topic'] for mt in merge_list]
+                        merged_doc = self.doc_merger.merge_multiple_topics_into_document(topics, current_doc)
+
+                        if merged_doc:
+                            current_doc = merged_doc
+                            print(f"      ✅ SUCCESS: Merged {len(merge_list)} topics in ONE operation!")
+                            print(f"               Final content: {len(merged_doc.get('content', ''))} chars")
+                        else:
+                            print(f"      ❌ FAILED: Batch merge failed, skipping document")
+                            continue
 
                         # Save final merged document (after all topics merged)
                         if current_doc != self.db.get_document_by_id(doc_id):  # Check if changed

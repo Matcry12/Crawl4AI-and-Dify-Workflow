@@ -248,9 +248,10 @@ class DocumentCreator:
                 print(f"  ⚠️  No content found for topic: {title}")
                 return None
 
-            # Create document ID
+            # Create document ID with timestamp (prevents collisions on same day)
+            # Format: title_YYYYMMDD_HHMMSS (e.g., api_guide_20251030_143022)
             safe_title = title.lower().replace(' ', '_').replace(':', '').replace('/', '_')
-            doc_id = f"{safe_title}_{datetime.now().strftime('%Y%m%d')}"
+            doc_id = f"{safe_title}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
             # Generate embedding for document (uses summary for semantic matching)
             print(f"  🔢 Generating document embedding...")
