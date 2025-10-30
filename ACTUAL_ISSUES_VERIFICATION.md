@@ -2,8 +2,8 @@
 
 **Date:** 2025-10-29 (Updated: 2025-10-30)
 **Purpose:** Verify which issues from Professor's Analysis are ACTUALLY present vs theoretical
-**Method:** Direct code inspection and grep analysis
-**Status:** 3/5 Critical Issues FIXED ✅
+**Method:** Direct code inspection, grep analysis, and live database verification
+**Status:** 3/5 Critical Issues FULLY FIXED ✅ (with production verification)
 
 ---
 
@@ -305,6 +305,70 @@ document_merger.py:401:            chunk_embeddings = self.create_embeddings_bat
 ```
 
 **Risk Level:** ✅ **RESOLVED** - Major cost waste eliminated, performance dramatically improved
+
+**4. Additional Fixes for Batch Embedding Response Parsing** (2025-10-30)
+
+After implementing the batch API, we discovered multiple critical bugs in response parsing:
+
+**Bug #1: Nested Array Format** (commit 764021d)
+- **Issue:** Defensive flattening needed for individual embeddings
+- **Location:** `document_creator.py:241-247`, `document_merger.py:448-454`
+- **Fix:** Added validation before database insertion
+```python
+if isinstance(embedding[0], list):
+    embedding = embedding[0]  # Flatten [[...]] → [...]
+```
+
+**Bug #2: Double-Nested Format** (commit f84d424)
+- **Issue:** API returns `[[emb1, emb2, ...]]` all wrapped in one outer list
+- **Impact:** Only 1/5 chunks got embeddings (80% data loss)
+- **Fix:** Detect and flatten double-nested format
+```python
+if len(emb) == 1 and len(emb[0]) == len(batch):
+    all_embeddings.extend(emb[0])  # Extract inner list
+```
+
+**Bug #3: Dict Format with Multiple Embeddings** (commit 4f56e4d)
+- **Issue:** `result = {'embedding': [[emb1], [emb2]]}` treated as single embedding
+- **Impact:** Only 1/2 or 1/3 chunks got embeddings (50-67% data loss)
+- **User Report:** "✅ Generated embeddings for 1/2 chunks (batch mode)"
+- **Fix:** Enhanced dict handling to detect multiple embeddings
+```python
+if isinstance(result, dict) and 'embedding' in result:
+    emb = result['embedding']
+    if isinstance(emb[0], list):
+        if len(emb) == 1 and len(emb[0]) == len(batch):
+            all_embeddings.extend(emb[0])  # Double-nested
+        else:
+            all_embeddings.extend(emb)  # Regular nested
+```
+
+**5. UI Integration for Batch Settings** (commit 738a49e)
+
+Added user-facing controls in web UI:
+- **Toggle:** Enable/disable batch embedding
+- **Slider:** Batch size (1-100)
+- **Toggle:** Show cost metrics
+- **Backend:** Environment variable integration
+
+**Location:** `integrated_web_ui.py:599-627`, `integrated_web_ui.py:995-1008`
+
+**Final Verification (Database Query):**
+```sql
+SELECT
+    COUNT(*) as total_chunks,
+    SUM(CASE WHEN embedding IS NULL THEN 1 ELSE 0 END) as null_embeddings,
+    SUM(CASE WHEN embedding::text LIKE '[[%' THEN 1 ELSE 0 END) as nested_arrays,
+    SUM(CASE WHEN embedding::text LIKE '[%' THEN 1 ELSE 0 END) as flat_arrays
+FROM chunks;
+
+Result:
+ total_chunks | null_embeddings | nested_arrays | flat_arrays
+--------------+-----------------+---------------+-------------
+           10 |               0 |             0 |          10
+```
+
+**✅ All 10 chunks have correct flat embeddings in production database**
 
 ---
 
@@ -686,6 +750,27 @@ Re-run same benchmarks:
 
 **Report Prepared:** 2025-10-29
 **Last Updated:** 2025-10-30
-**Verification Method:** Direct code inspection, grep analysis, comprehensive testing
+**Verification Method:** Direct code inspection, grep analysis, comprehensive testing, and live database verification
 **Test Results:** 11/11 tests passing across 3 test suites
-**Confidence:** HIGH (all fixes verified by automated tests)
+**Production Verification:** 10/10 chunks with correct embeddings in database (0 nested arrays)
+**Confidence:** VERY HIGH (all fixes verified by automated tests + production database)
+
+---
+
+## Recent Commits (This Session)
+
+**Issue #3 Batch Embedding Fixes:**
+- `73ab2ab` - debug: Add logging to diagnose batch embedding response format
+- `764021d` - fix: Add defensive flattening for nested embedding arrays (CRITICAL FIX)
+- `f84d424` - fix: Handle double-nested batch embedding response format (CRITICAL)
+- `4f56e4d` - fix: Handle dict format with multiple embeddings in 'embedding' key (CRITICAL)
+- `738a49e` - feat: UI controls for batch embedding configuration
+- `be1bbe1` - docs: Update workflow status report with nested array fix and UI integration
+- `8ec5e61` - docs: Add final verification report with live database confirmation
+- `6f65870` - test: Comprehensive verification of batch embedding fix
+
+**All commits include:**
+- Comprehensive commit messages
+- Before/after comparisons
+- Impact analysis
+- Test verification
