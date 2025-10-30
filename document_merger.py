@@ -98,8 +98,20 @@ class DocumentMerger:
         if not texts:
             return []
 
-        # Gemini batch API supports up to 100 texts per call
-        BATCH_SIZE = 100
+        # Check if batch embedding is enabled (default: True)
+        batch_enabled = os.getenv('BATCH_EMBEDDING_ENABLED', 'True').lower() == 'true'
+
+        if not batch_enabled:
+            # Fall back to sequential if batch is disabled
+            embeddings = []
+            for text in texts:
+                emb = self.create_embedding(text)
+                embeddings.append(emb)
+            return embeddings
+
+        # Get batch size from environment (default: 100, Gemini's maximum)
+        BATCH_SIZE = int(os.getenv('BATCH_SIZE', '100'))
+        BATCH_SIZE = min(BATCH_SIZE, 100)  # Ensure it doesn't exceed Gemini's limit
         all_embeddings = []
 
         try:
@@ -443,7 +455,15 @@ OUTPUT FORMAT REMINDER:
                 return None
 
             print(f"  ✅ Generated embeddings for {len(chunks_with_embeddings)}/{len(new_chunks)} chunks (batch mode)")
-            print(f"     API calls saved: {len(new_chunks) - (len(new_chunks)//100 + 1)} calls ({((len(new_chunks) - (len(new_chunks)//100 + 1))/max(len(new_chunks),1)*100):.0f}% reduction)")
+
+            # Show cost metrics if enabled
+            show_metrics = os.getenv('SHOW_COST_METRICS', 'True').lower() == 'true'
+            if show_metrics and len(new_chunks) > 0:
+                batch_size = int(os.getenv('BATCH_SIZE', '100'))
+                api_calls_made = (len(new_chunks) + batch_size - 1) // batch_size
+                api_calls_saved = len(new_chunks) - api_calls_made
+                reduction_pct = (api_calls_saved / len(new_chunks) * 100) if len(new_chunks) > 0 else 0
+                print(f"     💰 API calls saved: {api_calls_saved} calls ({reduction_pct:.0f}% reduction)")
 
             # Step 6: Create updated document
             # Database will handle atomic transaction:
