@@ -129,6 +129,13 @@ class DocumentMerger:
                     task_type="retrieval_document"
                 )
 
+                # DEBUG: Log what we received
+                print(f"  🔍 DEBUG: Batch size={len(batch)}, Result type={type(result)}")
+                if hasattr(result, 'embedding'):
+                    print(f"  🔍 DEBUG: result.embedding exists, type={type(result.embedding)}")
+                if hasattr(result, 'embeddings'):
+                    print(f"  🔍 DEBUG: result.embeddings exists, count={len(result.embeddings)}")
+
                 # Extract embeddings from result - Gemini returns different formats
                 if hasattr(result, 'embedding'):
                     # Single embedding via attribute (batch of 1)
