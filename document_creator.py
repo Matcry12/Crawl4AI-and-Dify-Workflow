@@ -157,9 +157,39 @@ class DocumentCreator:
                         else:
                             all_embeddings.append(list(emb))
                 elif isinstance(result, dict) and 'embedding' in result:
-                    # Dict with single embedding
+                    # Dict with 'embedding' key
                     emb = result['embedding']
-                    all_embeddings.append(emb)
+                    print(f"  🔍 DEBUG: Dict with 'embedding', type={type(emb)}, len={len(emb) if isinstance(emb, list) else 'N/A'}")
+
+                    # Check if it contains multiple embeddings or single embedding
+                    if isinstance(emb, list) and len(emb) > 0:
+                        # Could be: [emb1, emb2, ...] or [[emb1], [emb2], ...]
+                        if isinstance(emb[0], list):
+                            # Multiple embeddings, each wrapped: [[emb1], [emb2], ...]
+                            # Apply the same double-nested check
+                            if len(emb) == 1 and len(emb[0]) == len(batch):
+                                print(f"  🔍 DEBUG: Dict double-nested format detected")
+                                all_embeddings.extend(emb[0])
+                            else:
+                                all_embeddings.extend(emb)
+                        elif len(emb) == len(batch):
+                            # Multiple flat embeddings: [emb1, emb2, ...]
+                            # But emb1, emb2 are NOT lists (just single values)
+                            # This is ambiguous - could be one embedding with batch_size dimensions
+                            # OR batch_size embeddings with 1 dimension each
+                            # Check if first element looks like an embedding (has multiple values)
+                            if hasattr(emb[0], '__len__') and len(emb[0]) > 1:
+                                # Looks like multiple embeddings
+                                all_embeddings.extend(emb)
+                            else:
+                                # Single embedding vector
+                                all_embeddings.append(emb)
+                        else:
+                            # Single embedding vector
+                            all_embeddings.append(emb)
+                    else:
+                        # Single embedding
+                        all_embeddings.append(emb)
                 elif isinstance(result, dict) and 'embeddings' in result:
                     # Dict with multiple embeddings
                     for emb_data in result['embeddings']:
