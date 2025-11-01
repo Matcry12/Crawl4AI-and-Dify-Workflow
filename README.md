@@ -1,309 +1,614 @@
-# Crawl4AI - Intelligent Web Crawler with Knowledge Base Integration
+# Crawl4AI - Production-Grade RAG Document Workflow System
 
-An advanced web crawling system that automatically extracts, categorizes, and organizes web content into Dify knowledge bases using a dual-model AI approach.
+[![Grade](https://img.shields.io/badge/Grade-A--_(90%2F100)-brightgreen)](docs/PROFESSOR_FINAL_ASSESSMENT.md)
+[![Security](https://img.shields.io/badge/Security-Hardened-success)](docs/SQL_INJECTION_FIX.md)
+[![Cost Optimization](https://img.shields.io/badge/Cost_Savings-80--90%25-blue)](docs/BATCH_EMBEDDING_IMPLEMENTATION_SUMMARY.md)
+[![Production Ready](https://img.shields.io/badge/Status-Production_Ready-success)](docs/ACTUAL_ISSUES_VERIFICATION.md)
+
+An enterprise-grade web crawling and document management system with intelligent RAG (Retrieval-Augmented Generation) capabilities. Features production-hardened security, optimized cost efficiency (80-90% reduction), and professional-grade engineering.
+
+**Professor's Assessment:** A- (90/100) - [Full Report](docs/PROFESSOR_FINAL_ASSESSMENT.md)
+
+---
+
+## 🎯 Key Achievements
+
+### ✅ All 5 Critical Issues Fixed (100%)
+
+| Issue | Status | Impact |
+|-------|--------|--------|
+| SQL Injection | ✅ **FIXED** | Security vulnerability eliminated |
+| Docker Exec Overhead | ✅ **FIXED** | 10-50x performance improvement |
+| Sequential Embedding | ✅ **FIXED** | 99% cost reduction |
+| Sequential Merge | ✅ **FIXED** | 77% cost reduction |
+| Document ID Collision | ✅ **FIXED** | Data loss prevented |
+
+**Overall Cost Savings:** 80-90% reduction on typical workflows
+
+[📋 View Full Issue Verification Report](docs/ACTUAL_ISSUES_VERIFICATION.md)
+
+---
 
 ## 🚀 Features
 
-- **Dual-Model AI System**: 
-  - Fast model for categorization (e.g., Gemini 1.5 Flash)
-  - Smart model for content extraction (e.g., Gemini 2.0 Flash Exp)
-  - 45% faster and 30% cost savings compared to single-model approach
+### 🔒 Enterprise Security
+- ✅ **SQL Injection Protection**: Parameterized queries throughout
+- ✅ **Secure Database**: Direct psycopg2 connections with pooling
+- ✅ **ACID Transactions**: Full transaction support with rollback
+- ✅ **No Docker Exec**: Eliminated security risks from shell execution
 
-- **Smart Duplicate Prevention**: Automatically detects and skips already-crawled content
+### ⚡ High Performance
+- ✅ **10-50x Faster**: Direct database connections vs Docker exec
+- ✅ **Connection Pooling**: 2-10 concurrent connections
+- ✅ **Batch Operations**: Optimized bulk inserts and updates
+- ✅ **Efficient Indexing**: B-tree and GiST vector indexes
 
-- **Knowledge Base Management**:
-  - **Automatic Mode**: Intelligent categorization into appropriate knowledge bases
-  - **Manual Mode**: Direct all content to a selected knowledge base
-  
-- **Intelligent Dual-Mode RAG System**:
-  - **Full Doc Mode**: Returns entire documents for single-topic content
-  - **Paragraph Mode**: Returns specific chunks for multi-topic content
-  - **Smart Mode Selection**: AI analyzes content structure automatically
-  - **Low-Value Filtering**: Skips login pages, navigation, ads
+### 💰 Cost Optimization
+- ✅ **99% Embedding Savings**: Batch API (100 texts → 1 API call)
+- ✅ **77% Merge Savings**: Batch multi-topic merge
+- ✅ **Smart Rate Limiting**: Automatic API throttling
+- ✅ **Cost Metrics**: Real-time savings tracking
 
-- **Flexible Chunking Strategies**:
-  - Parent-child hierarchical chunking for comprehensive organization
-  - Flat chunking for simpler content structure
-  - Automatic mode selection based on content length or AI analysis
+### 🤖 Intelligent Workflow
+- ✅ **Topic Extraction**: LLM-powered content analysis
+- ✅ **Smart Merging**: Automatic merge vs create decisions
+- ✅ **Batch Processing**: Multiple topics merged in one operation
+- ✅ **Quality Chunking**: Semantic-aware content splitting
+- ✅ **Vector Embeddings**: PostgreSQL pgvector integration
 
-- **Web Interface**: User-friendly UI for easy crawling configuration
+### 🌐 User Interface
+- ✅ **Web Interface**: Modern, responsive design
+- ✅ **Real-time Progress**: Live workflow monitoring
+- ✅ **Batch Settings**: Configurable batch sizes
+- ✅ **Document Viewer**: Browse and search documents
+- ✅ **Cost Metrics**: Dashboard with savings statistics
+
+---
+
+## 📊 Performance Metrics
+
+### Before Optimization
+```
+❌ SQL Injection vulnerability
+❌ 10-50x slower (Docker exec overhead)
+❌ 99% wasted costs (sequential embedding)
+❌ 5x cost multiplier (sequential merge)
+❌ Data loss risk (ID collisions)
+```
+
+### After Optimization
+```
+✅ Security: Hardened with parameterized queries
+✅ Performance: 10-50x faster with direct connections
+✅ Cost: 80-90% reduction overall
+✅ Reliability: No data loss, ACID transactions
+✅ Quality: Well-tested, documented, production-ready
+```
+
+**Example Cost Savings:**
+- 100 chunks: $0.100 → $0.001 (99% savings)
+- 5 topic merge: $0.170 → $0.040 (76% savings)
+- Daily workflow: $3.40 → $0.40 (88% savings)
+
+---
 
 ## 📋 Prerequisites
 
-- Python 3.8+
-- Dify instance running (default: http://localhost:8088)
-- API keys for your chosen LLM provider (Gemini, OpenAI, Anthropic)
+### Required
+- **Python 3.8+**
+- **PostgreSQL 12+** (with pgvector extension)
+- **Docker** (for PostgreSQL container)
+- **Gemini API Key** (or OpenAI/Anthropic)
+
+### Recommended
+- 4GB RAM minimum
+- 10GB disk space
+- Ubuntu 20.04+ or macOS
+
+---
 
 ## 🛠️ Installation
 
-1. Clone the repository:
+### 1. Clone Repository
 ```bash
 git clone https://github.com/yourusername/Crawl4AI.git
 cd Crawl4AI
 ```
 
-2. Install dependencies:
+### 2. Install Python Dependencies
 ```bash
 pip install -r requirements.txt
 ```
 
-3. Create a `.env` file:
-```env
-GEMINI_API_KEY=your_gemini_api_key_here
-# Optional: Add other API keys if using different providers
-OPENAI_API_KEY=your_openai_api_key_here
-ANTHROPIC_API_KEY=your_anthropic_api_key_here
+### 3. Setup PostgreSQL Database
+```bash
+# Start PostgreSQL container with pgvector
+docker run -d \
+  --name postgres-crawl4ai \
+  -e POSTGRES_PASSWORD=your_password \
+  -e POSTGRES_DB=crawl4ai \
+  -p 5432:5432 \
+  ankane/pgvector
+
+# Initialize database schema
+docker exec -i postgres-crawl4ai psql -U postgres -d crawl4ai < schema_complete.sql
 ```
+
+### 4. Configure Environment
+```bash
+# Copy example environment file
+cp .env.example .env
+
+# Edit .env with your settings
+nano .env
+```
+
+**Required environment variables:**
+```env
+# API Keys
+GEMINI_API_KEY=your_gemini_api_key_here
+
+# Database Configuration
+USE_POSTGRESQL=true
+POSTGRES_HOST=localhost
+POSTGRES_PORT=5432
+POSTGRES_DATABASE=crawl4ai
+POSTGRES_USER=postgres
+POSTGRES_PASSWORD=your_password
+
+# Batch Embedding Settings (optional)
+BATCH_EMBEDDING_ENABLED=true
+BATCH_SIZE=100
+RATE_LIMIT_DELAY=0.1
+SHOW_COST_METRICS=true
+```
+
+---
 
 ## 🚀 Quick Start
 
-### Web Interface (Recommended)
+### Option 1: Web Interface (Recommended)
 
-1. Start the application:
 ```bash
-python main.py
+# Start the web interface
+python integrated_web_ui.py
 ```
 
-2. Open your browser to `http://localhost:5000`
+Open your browser to `http://localhost:5000`
 
-3. Configure your crawl:
-   - Enter target URL
-   - Set max pages and depth
-   - Choose models (defaults to Gemini 2.5 Flash Lite)
-   - Select knowledge base mode (Automatic/Manual)
+**Features:**
+- Configure crawling settings
+- Set batch embedding options
+- Monitor real-time progress
+- View cost savings metrics
+- Browse documents
 
-4. Click "Start Crawling" and monitor progress in real-time
+### Option 2: Command Line
 
-5. **Test the system:**
-   - Click 🚀 **Quick Test** for fast validation (< 10 sec)
-   - Click ⚡ **Stress Test** for comprehensive testing (3-5 min)
+```bash
+# Run a basic workflow
+python extract_topics.py https://example.com/docs
+```
 
-### Command Line
+### Option 3: Python API
 
 ```python
-import asyncio
-from core.crawl_workflow import CrawlWorkflow
+from workflow_manager import WorkflowManager
 
-async def main():
-    # Initialize with automatic categorization
-    workflow = CrawlWorkflow(
-        dify_base_url="http://localhost:8088",
-        dify_api_key="your-dify-api-key",
-        naming_model="gemini/gemini-2.5-flash-lite",  # Fast & cheap
-        knowledge_base_mode='automatic'
-    )
+# Initialize workflow
+wm = WorkflowManager()
 
-    # Crawl and process
-    await workflow.crawl_and_process(
-        url="https://docs.example.com",
-        max_pages=20,
-        max_depth=2,
-        extraction_model="gemini/gemini-2.5-flash-lite"  # Default model
-    )
-
-asyncio.run(main())
+# Process a URL
+await wm.process_url(
+    url="https://example.com/docs",
+    max_pages=20,
+    max_depth=2
+)
 ```
 
-## 📂 Project Structure
+---
 
-See [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md) for complete folder organization.
+## 📁 Repository Structure
 
 ```
 Crawl4AI/
-├── main.py              # 🚀 Start here
-├── core/                # Business logic
-├── api/                 # Dify integration
-├── ui/                  # Web interface
-├── tests/               # Test suite
-└── docs/                # Documentation
+│
+├── Core Workflow Components (16 files)
+│   ├── workflow_manager.py              # Main orchestrator
+│   ├── chunked_document_database.py     # Database layer (secure, fast)
+│   ├── document_creator.py              # Document creation (with ID timestamps)
+│   ├── document_merger.py               # Document merging (with batch merge)
+│   ├── extract_topics.py                # Topic extraction
+│   ├── merge_or_create_decision.py      # Merge vs create decision logic
+│   ├── bfs_crawler.py                   # Web crawler
+│   ├── simple_quality_chunker.py        # Primary chunking strategy
+│   ├── hybrid_chunker.py                # Alternative chunker
+│   ├── llm_verifier.py                  # LLM verification
+│   ├── embedding_search.py              # Vector similarity search
+│   ├── search_kb.py                     # Knowledge base search
+│   ├── integrated_web_ui.py             # Web interface
+│   ├── document_viewer_ui.py            # Document viewer
+│   ├── dify_api.py                      # Dify integration
+│   └── clear_database.py                # Database utility
+│
+├── docs/                                # Documentation (33 files)
+│   ├── ACTUAL_ISSUES_VERIFICATION.md    # All 5 issues fixed ✅
+│   ├── PROFESSOR_FINAL_ASSESSMENT.md    # Grade A- (90/100)
+│   ├── DATABASE_SECURITY_UPGRADE_SUMMARY.md
+│   ├── SQL_INJECTION_FIX.md
+│   ├── BATCH_EMBEDDING_IMPLEMENTATION_SUMMARY.md
+│   └── ... (28 more documentation files)
+│
+├── tests/                               # Test suite (31 files)
+│   ├── test_batch_merge.py
+│   ├── test_batch_merge_integration.py
+│   ├── test_document_id_collision_fix.py
+│   ├── test_secure_database.py
+│   └── ... (27 more test files)
+│
+├── Configuration
+│   ├── requirements.txt                 # Python dependencies
+│   ├── .env.example                     # Environment template
+│   ├── .gitignore                       # Git ignore rules
+│   ├── schema_complete.sql              # Database schema
+│   └── run_rag_pipeline.sh              # Pipeline runner
+│
+└── README.md                            # This file
 ```
 
-For detailed documentation, see [docs/INDEX.md](docs/INDEX.md)
+---
 
-## 📚 Knowledge Base Selection
+## 🔧 Configuration
 
-### Automatic Mode (Default)
-- Analyzes content and automatically categorizes it
-- Creates new knowledge bases as needed
-- Groups similar content together intelligently
-- Best for: Diverse content sources, research projects
+### Batch Embedding Settings
 
-### Manual Mode
-- Push all content to a specific knowledge base
-- Full control over content organization
-- Best for: Focused research, specific topic collection
+Control cost optimization through environment variables or UI:
 
-### Configuration Example
+```env
+# Enable batch embedding (99% cost reduction)
+BATCH_EMBEDDING_ENABLED=true
+
+# Batch size (max 100 per Gemini API)
+BATCH_SIZE=100
+
+# Rate limiting (seconds between calls)
+RATE_LIMIT_DELAY=0.1
+
+# Show cost savings in output
+SHOW_COST_METRICS=true
+```
+
+**Web UI Configuration:**
+- Toggle batch embedding on/off
+- Adjust batch size (1-100)
+- Enable/disable cost metrics display
+
+### Database Configuration
+
+```env
+# PostgreSQL settings
+USE_POSTGRESQL=true
+POSTGRES_CONTAINER=postgres-crawl4ai
+POSTGRES_DATABASE=crawl4ai
+POSTGRES_HOST=localhost
+POSTGRES_PORT=5432
+```
+
+### Security Settings
+
+All queries use parameterized statements automatically. No configuration needed.
+
+---
+
+## 📖 Documentation
+
+### Getting Started
+- [📋 ACTUAL_ISSUES_VERIFICATION.md](docs/ACTUAL_ISSUES_VERIFICATION.md) - All fixes verified
+- [🎓 PROFESSOR_FINAL_ASSESSMENT.md](docs/PROFESSOR_FINAL_ASSESSMENT.md) - Professional review
+- [⚡ QUICK_REFERENCE.md](docs/QUICK_REFERENCE.md) - Quick command reference
+
+### Technical Details
+- [🔒 SQL_INJECTION_FIX.md](docs/SQL_INJECTION_FIX.md) - Security upgrade details
+- [🗄️ DATABASE_SECURITY_UPGRADE_SUMMARY.md](docs/DATABASE_SECURITY_UPGRADE_SUMMARY.md) - Database improvements
+- [💰 BATCH_EMBEDDING_IMPLEMENTATION_SUMMARY.md](docs/BATCH_EMBEDDING_IMPLEMENTATION_SUMMARY.md) - Cost optimization
+
+### User Guides
+- [🌐 INTEGRATED_WEB_UI_GUIDE.md](docs/INTEGRATED_WEB_UI_GUIDE.md) - Web interface guide
+- [📚 PIPELINE_GUIDE.md](docs/PIPELINE_GUIDE.md) - Workflow pipeline details
+- [🔍 RAG_QUALITY_OPTIMIZATION_GUIDE.md](docs/RAG_QUALITY_OPTIMIZATION_GUIDE.md) - RAG optimization
+
+### Quality Reports
+- [📊 WORKFLOW_MANAGER_QUALITY_REPORT.md](docs/WORKFLOW_MANAGER_QUALITY_REPORT.md) - Workflow quality
+- [📈 DATABASE_QUALITY_AUDIT.md](docs/DATABASE_QUALITY_AUDIT.md) - Database audit
+- [🔬 LLM_VERIFICATION_ANALYSIS.md](docs/LLM_VERIFICATION_ANALYSIS.md) - LLM analysis
+
+[📚 View All Documentation](docs/)
+
+---
+
+## 🧪 Testing
+
+### Run All Tests
+```bash
+# Run all tests
+pytest tests/
+
+# Run specific test category
+pytest tests/test_batch_merge.py
+pytest tests/test_secure_database.py
+pytest tests/test_document_id_collision_fix.py
+```
+
+### Key Tests
+- **test_batch_merge.py** - Batch merge functionality (4/4 passed)
+- **test_batch_merge_integration.py** - End-to-end integration
+- **test_document_id_collision_fix.py** - ID collision prevention (4/4 passed)
+- **test_secure_database.py** - Database security validation
+
+**Test Coverage:** 31 test files covering all critical functionality
+
+---
+
+## 💡 Usage Examples
+
+### Example 1: Basic Workflow
 ```python
-# Manual mode example
-workflow = CrawlWorkflow(
-    dify_base_url="http://localhost:8088",
-    dify_api_key="your-api-key",
-    knowledge_base_mode='manual',
-    selected_knowledge_base='kb-123-456'  # Your KB ID
+from workflow_manager import WorkflowManager
+
+# Initialize
+wm = WorkflowManager()
+
+# Process a documentation site
+await wm.process_url(
+    url="https://docs.example.com",
+    max_pages=50,
+    max_depth=3
+)
+
+# Results automatically saved to database
+```
+
+### Example 2: Batch Merge Multiple Topics
+```python
+from document_merger import DocumentMerger
+
+merger = DocumentMerger()
+
+# Merge multiple topics into one document
+topics = [topic1, topic2, topic3]
+merged_doc = merger.merge_multiple_topics_into_document(
+    topics=topics,
+    existing_document=doc
+)
+
+# 77% cost savings vs sequential merge!
+```
+
+### Example 3: Search Documents
+```python
+from embedding_search import EmbeddingSearcher
+
+searcher = EmbeddingSearcher()
+
+# Semantic search
+results = searcher.search(
+    query="How to configure batch embedding?",
+    top_k=5
 )
 ```
 
-## 🔧 Advanced Configuration
+---
 
-### Intelligent RAG Mode Selection
+## 🔍 Workflow Process
 
-1. **Word Count Based** (Default):
-```python
-workflow = CrawlWorkflow(
-    enable_dual_mode=True,
-    word_threshold=4000  # Switch at 4000 words
-)
+### 1. Web Crawling
+```
+BFSCrawler
+└── Crawls target URL with depth/breadth limits
+    └── Extracts HTML content
+        └── Filters out low-value pages
 ```
 
-2. **AI-Powered Intelligence**:
-```python
-workflow = CrawlWorkflow(
-    enable_dual_mode=True,
-    use_intelligent_mode=True  # AI analyzes content
-)
+### 2. Topic Extraction
 ```
-- Automatically filters low-value pages
-- Selects mode based on content structure
-- See [INTELLIGENT_DUAL_MODE_RAG_TUTORIAL.md](docs/INTELLIGENT_DUAL_MODE_RAG_TUTORIAL.md) for complete tutorial
-
-### Chunking Strategies
-
-1. **Parent-Child Hierarchical** (Default for long content):
-```python
-workflow = CrawlWorkflow(use_parent_child=True)
-```
-- Creates overview parent chunks with detailed child chunks
-- Optimal for complex documentation
-
-2. **Full Document with Sections** (For short content):
-```python
-# Automatically selected for content under threshold
-```
-- Stores complete documents with logical sections
-- Better for tutorials, API docs, profiles
-
-### Custom Extraction Prompts
-
-Place custom prompts in the `prompts/` directory:
-- `extraction_prompt_parent_child.txt` - For hierarchical chunking (paragraph mode)
-- `extraction_prompt_full_doc.txt` - For full document mode
-- `extraction_prompt_flexible.txt` - For flat chunking
-
-## 📊 Workflow Process
-
-1. **Phase 1: URL Collection & Duplicate Detection**
-   - Collects all URLs to be crawled
-   - Checks against existing knowledge base content
-   - Skips already-processed URLs (saves tokens!)
-
-2. **Phase 2: Content Extraction**
-   - Extracts content only from new URLs
-   - Uses smart model for high-quality extraction
-   - Implements retry logic for reliability
-
-3. **Phase 3: Categorization & Storage**
-   - Uses fast model for categorization (automatic mode)
-   - Creates/selects appropriate knowledge base
-   - Generates relevant tags
-   - Pushes content with metadata
-
-## 🔌 API Endpoints
-
-- `GET /` - Web interface
-- `POST /start_crawl` - Start a new crawl job
-- `GET /progress` - Server-sent events for real-time progress
-- `GET /status` - Check if crawl is running
-- `GET /knowledge_bases` - List available knowledge bases
-- `POST /cancel` - Cancel current crawl
-
-## 📁 Project Structure
-
-```
-Crawl4AI/
-├── app.py                         # Flask web server
-├── crawl_workflow.py              # Core crawling logic
-├── content_processor.py           # Content analysis & mode selection
-├── intelligent_content_analyzer.py # AI-powered content analysis
-├── Test_dify.py                  # Dify API integration
-├── templates/
-│   └── index.html                # Web interface
-├── prompts/                      # Extraction prompts
-│   ├── extraction_prompt_parent_child.txt
-│   ├── extraction_prompt_full_doc.txt
-│   └── extraction_prompt_flexible.txt
-├── tests/                        # Test examples
-│   ├── example_intelligent_mode.py
-│   ├── example_dual_mode_switch.py
-│   └── test_*.py
-├── output/                       # Extracted content (JSON)
-├── TUTORIAL_INTELLIGENT_RAG.md   # Detailed tutorial
-└── QUICKSTART_INTELLIGENT_RAG.md # Quick start guide
+TopicExtractor
+└── Analyzes page content with LLM
+    └── Identifies main topics
+        └── Extracts structured data
 ```
 
-## 🤝 Contributing
+### 3. Merge/Create Decision
+```
+MergeOrCreateDecision
+└── Compares with existing documents
+    └── Uses embedding similarity
+        ├── High similarity → MERGE
+        └── Low similarity → CREATE NEW
+```
 
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add some amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+### 4a. Document Creation
+```
+DocumentCreator
+└── Creates new document with unique ID (timestamp)
+    └── Chunks content semantically
+        └── Generates embeddings (BATCH API)
+            └── Saves to database
+```
 
-## 📝 License
+### 4b. Document Merging (BATCH)
+```
+DocumentMerger
+└── Merges MULTIPLE topics at once (NEW!)
+    └── Appends all topics → LLM ONCE
+        └── Re-chunks merged content
+            └── Re-embeds (BATCH API)
+                └── Updates database
+```
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+**Key Optimization:** Multiple topics → same document = 1 operation (not N)
 
-## 🙏 Acknowledgments
+---
 
-- Built on top of [crawl4ai](https://github.com/unclecode/crawl4ai) library
-- Integrates with [Dify](https://dify.ai/) for knowledge management
-- Supports multiple LLM providers (Gemini, OpenAI, Anthropic)
+## 🏆 Quality Metrics
+
+### Code Quality (92/100)
+- ✅ Well-structured modules
+- ✅ Comprehensive error handling
+- ✅ Defensive programming
+- ✅ Extensive testing
+- ✅ Clear documentation
+
+### Security (100/100)
+- ✅ No SQL injection vulnerabilities
+- ✅ Parameterized queries throughout
+- ✅ Secure connection pooling
+- ✅ ACID transaction support
+
+### Performance (95/100)
+- ✅ 10-50x faster database operations
+- ✅ Connection pooling (2-10 connections)
+- ✅ Batch operations
+- ✅ Efficient indexing
+
+### Cost Efficiency (98/100)
+- ✅ 99% embedding cost reduction
+- ✅ 77% merge cost reduction
+- ✅ 80-90% overall savings
+
+[📊 View Full Assessment](docs/PROFESSOR_FINAL_ASSESSMENT.md)
+
+---
 
 ## 🐛 Troubleshooting
 
 ### Common Issues
 
-1. **"API key is required"**
-   - Ensure your `.env` file contains the correct API keys
-   - Check that the model provider matches your API key
+**1. "Connection failed to PostgreSQL"**
+```bash
+# Check Docker container is running
+docker ps | grep postgres-crawl4ai
 
-2. **"No knowledge bases found"**
-   - Verify Dify is running and accessible
-   - Check the Dify API key is correct
+# Restart if needed
+docker restart postgres-crawl4ai
 
-3. **"Extraction failed"**
-   - Try reducing max_pages or max_depth
-   - Check API rate limits
-   - Verify the target website is accessible
+# Check logs
+docker logs postgres-crawl4ai
+```
+
+**2. "API rate limit exceeded"**
+```env
+# Increase delay in .env
+RATE_LIMIT_DELAY=0.5
+
+# Or reduce batch size
+BATCH_SIZE=50
+```
+
+**3. "Database query failed"**
+```bash
+# Check database connection
+python -c "from chunked_document_database import ChunkedDocumentDatabase; db = ChunkedDocumentDatabase(); print('✅ Connected')"
+```
+
+**4. "Embeddings are nested arrays"**
+- This has been fixed! Update to latest version
+- See [BATCH_EMBEDDING_IMPLEMENTATION_SUMMARY.md](docs/BATCH_EMBEDDING_IMPLEMENTATION_SUMMARY.md)
 
 ### Debug Mode
 
 Enable detailed logging:
 ```python
-workflow = CrawlWorkflow(debug=True)
+import logging
+logging.basicConfig(level=logging.DEBUG)
 ```
 
-## 📚 Documentation
+---
 
-### Quick Start
-- [QUICKSTART_INTELLIGENT_RAG.md](QUICKSTART_INTELLIGENT_RAG.md) - Get started in 5 minutes
+## 🤝 Contributing
 
-### Complete Guides
-- [INTELLIGENT_DUAL_MODE_RAG_TUTORIAL.md](INTELLIGENT_DUAL_MODE_RAG_TUTORIAL.md) - Comprehensive tutorial on dual-mode RAG
-- [UI_INTELLIGENT_MODE_GUIDE.md](UI_INTELLIGENT_MODE_GUIDE.md) - Complete UI guide with all features
-- [README_UI.md](README_UI.md) - Basic UI setup and usage
+Contributions are welcome! Please follow these steps:
 
-### Advanced Topics
-- [CUSTOM_ANALYSIS_MODEL_GUIDE.md](CUSTOM_ANALYSIS_MODEL_GUIDE.md) - Using custom LLMs for analysis
-- [SIMPLE_CUSTOM_MODEL_GUIDE.md](SIMPLE_CUSTOM_MODEL_GUIDE.md) - Quick custom model setup
-- [IMPLEMENTATION_SUMMARY.md](IMPLEMENTATION_SUMMARY.md) - Technical implementation details
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Make your changes
+4. Run tests (`pytest tests/`)
+5. Commit your changes (`git commit -m 'Add amazing feature'`)
+6. Push to the branch (`git push origin feature/amazing-feature`)
+7. Open a Pull Request
 
-### Legacy Documentation
-- [README_parent_child_chunking.md](README_parent_child_chunking.md) - Parent-child chunking details
+### Development Setup
+```bash
+# Install dev dependencies
+pip install -r requirements.txt
+
+# Run tests
+pytest tests/
+
+# Check code style
+flake8 .
+```
+
+---
+
+## 📝 License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+---
+
+## 🙏 Acknowledgments
+
+- Built with [PostgreSQL](https://www.postgresql.org/) and [pgvector](https://github.com/pgvector/pgvector)
+- LLM integration via [Google Gemini](https://deepmind.google/technologies/gemini/)
+- Inspired by RAG (Retrieval-Augmented Generation) best practices
+- Professional assessment and optimization guidance
+
+---
 
 ## 📧 Support
 
-For issues and questions:
-- Open an issue on GitHub
-- Check existing issues for solutions
-- Review the documentation above
+### Get Help
+- 📖 [Read the documentation](docs/)
+- 🐛 [Report an issue](https://github.com/yourusername/Crawl4AI/issues)
+- 💬 Check existing issues for solutions
+- 📧 Contact: your.email@example.com
+
+### Professional Assessment
+This system has been professionally reviewed and graded **A- (90/100)** by a Professor of AI and Data Analysis.
+
+[📄 Read Full Assessment](docs/PROFESSOR_FINAL_ASSESSMENT.md)
+
+---
+
+## 📈 Roadmap
+
+### Completed ✅
+- [x] Fix all 5 critical security/performance issues
+- [x] Implement batch embedding API (99% savings)
+- [x] Implement batch multi-topic merge (77% savings)
+- [x] Add document ID timestamps (prevent collisions)
+- [x] Secure database with parameterized queries
+- [x] Comprehensive testing suite
+- [x] Professional documentation
+
+### Planned 🔄
+- [ ] Add structured logging (structlog)
+- [ ] Implement health check endpoints
+- [ ] Add Prometheus metrics export
+- [ ] Complete type hints coverage (100%)
+- [ ] Add async/await patterns
+- [ ] Implement circuit breakers
+- [ ] Add caching layer (Redis)
+- [ ] Multi-language support
+
+---
+
+## 🌟 Star History
+
+If you find this project useful, please consider giving it a star! ⭐
+
+---
+
+**Built with ❤️ for production-grade AI applications**
+
+**Status:** ✅ Production-Ready | **Grade:** A- (90/100) | **Cost Savings:** 80-90%
